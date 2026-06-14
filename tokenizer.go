@@ -179,12 +179,13 @@ func skipWhitespace(next tokenizerAction) tokenizerAction {
 // tokenizeJCL is the entry-point action. It skips leading whitespace, then
 // dispatches on the next rune to a specific sub-tokenizer.
 //
-// This slice recognizes the lexemes of a minimal job: the "//" statement
-// identifier, name/operation/keyword/value runs (all [TokenIdentifier], the
-// parser classifies them by field position), apostrophe-delimited quoted
-// strings, and the ( ) , = symbols. A rune that begins no recognized lexeme
-// yields an [UnexpectedCharacterError]. Numbers, the . * & + - symbols, //*
-// comments, and line continuation are deferred to later stories.
+// This slice recognizes the lexemes of a minimal job plus the structure of
+// parameter fields: the "//" statement identifier, name/operation/keyword/value
+// runs (all [TokenIdentifier], the parser classifies them by field position),
+// apostrophe-delimited quoted strings, digit-run numbers ([TokenNumber], used
+// for numeric subparameters), and the ( ) , = symbols. A rune that begins no
+// recognized lexeme yields an [UnexpectedCharacterError]. The . * & + - symbols,
+// //* comments, and line continuation are deferred to later stories.
 func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	return skipWhitespace(func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		pos := t.pos
@@ -199,6 +200,8 @@ func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 			return tokenizeString(pos)
 		case r == '(' || r == ')' || r == ',' || r == '=':
 			return yieldSymbol(pos, utf8.AppendRune(nil, r))
+		case isDigit(r):
+			return tokenizeNumber(pos, r)
 		case isNameStart(r):
 			return tokenizeName(pos, r)
 		default:
@@ -261,6 +264,35 @@ func tokenizeName(start Pos, first rune) tokenizerAction {
 	}
 }
 
+// tokenizeNumber accumulates a maximal run of decimal digits, beginning with
+// first already consumed at start, and emits a [TokenNumber]. JCL numbers are
+// plain unsigned decimal integers (return codes, space quantities, generation
+// numbers); signed forms combine a sign [TokenSymbol] with a Number and are
+// deferred. A non-digit rune is backed up so the next action re-reads it; end of
+// input ends the run.
+//
+// A value that begins with a digit but continues with letters (e.g. a device
+// address such as 0A80) splits into a Number followed by an Identifier; this
+// mixed-scalar case is not yet handled and is deferred to value tokenization.
+func tokenizeNumber(start Pos, first rune) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		value := utf8.AppendRune(nil, first)
+		for {
+			pos := t.pos
+			r, err := t.next()
+			if err != nil {
+				tok := Token{Pos: start, Type: TokenNumber, Value: value}
+				return yieldTokenThen(tok, yieldErrorOr(err, nil))
+			}
+			if !isDigit(r) {
+				tok := Token{Pos: start, Type: TokenNumber, Value: value}
+				return yieldErrorOr(t.backup(pos), yieldTokenThen(tok, tokenizeJCL))
+			}
+			value = utf8.AppendRune(value, r)
+		}
+	}
+}
+
 // tokenizeString scans an apostrophe-delimited quoted string, the opening
 // apostrophe already consumed at start. Two consecutive apostrophes are an
 // escaped apostrophe, not the close. The raw lexeme including both delimiters becomes the
@@ -306,7 +338,12 @@ func isNameStart(r rune) bool {
 // isNameContinue reports whether r may appear after the first rune of a JCL name
 // or unquoted value: a letter, digit, or national character.
 func isNameContinue(r rune) bool {
-	return isNameStart(r) || ('0' <= r && r <= '9')
+	return isNameStart(r) || isDigit(r)
+}
+
+// isDigit reports whether r is an ASCII decimal digit, which begins a Number.
+func isDigit(r rune) bool {
+	return '0' <= r && r <= '9'
 }
 
 // UnexpectedCharacterError is returned by the tokenizer when it encounters a
