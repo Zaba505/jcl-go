@@ -18,12 +18,12 @@ func TestPrinter(t *testing.T) {
 
 	testCases := []struct {
 		name     string
-		input    *File
+		input    *Job
 		expected string
 	}{
 		{
-			name:     "empty file prints nothing",
-			input:    &File{},
+			name:     "empty job prints nothing",
+			input:    &Job{},
 			expected: "",
 		},
 	}
