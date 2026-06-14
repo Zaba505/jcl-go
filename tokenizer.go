@@ -108,17 +108,22 @@ func (t *tokenizer) backup(previousPos Pos) error {
 }
 
 // peekByte returns the next unread byte without consuming it (so the position is
-// unchanged), reporting false at end of input or on any read error. The lexemes
-// that need lookahead here — the second '/' of the "//" identifier and the
-// doubled apostrophe inside a quoted string — are all ASCII, so a byte is enough.
-// [bufio.Reader.Peek] invalidates a subsequent UnreadRune, so a byte peeked here
-// must be consumed with [tokenizer.next], never put back with [tokenizer.backup].
-func (t *tokenizer) peekByte() (byte, bool) {
-	b, _ := t.buf.Peek(1)
-	if len(b) == 0 {
-		return 0, false
+// unchanged). It reports [io.EOF] at end of input and propagates any other read
+// error, so callers can surface a genuine I/O failure instead of mistaking it
+// for end of input. The lexemes that need lookahead here — the second '/' of the
+// "//" identifier and the doubled apostrophe inside a quoted string — are all
+// ASCII, so a byte is enough. [bufio.Reader.Peek] invalidates a subsequent
+// UnreadRune, so a byte peeked here must be consumed with [tokenizer.next],
+// never put back with [tokenizer.backup].
+func (t *tokenizer) peekByte() (byte, error) {
+	b, err := t.buf.Peek(1)
+	if len(b) > 0 {
+		return b[0], nil
 	}
-	return b[0], true
+	if err == nil {
+		err = io.EOF
+	}
+	return 0, err
 }
 
 // tokenizerAction is one step of the tokenizer state machine: it reads some
@@ -209,13 +214,19 @@ func yieldSymbol(pos Pos, value []byte) tokenizerAction {
 	return yieldTokenThen(Token{Pos: pos, Type: TokenSymbol, Value: value}, tokenizeJCL)
 }
 
-// tokenizeStatementIdentifier scans the "//" statement identifier in columns
-// 1–2, the first '/' already consumed at start. Only the "//" form is recognized
-// in this slice; the "//*" comment and "/*" delimiter identifiers are deferred,
-// so a lone '/' (or a '/' at end of input) is unexpected.
+// tokenizeStatementIdentifier scans the "//" statement identifier, the first '/'
+// already consumed at start. This slice does not enforce column positioning, so
+// "//" is recognized wherever a lexeme may begin; column-1–2 enforcement is
+// deferred. Only the "//" form is recognized in this slice; the "//*" comment
+// and "/*" delimiter identifiers are deferred, so a lone '/' (or a '/' at end of
+// input) is unexpected. A non-EOF read error from the lookahead is propagated.
 func tokenizeStatementIdentifier(start Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
-		if b, ok := t.peekByte(); ok && b == '/' {
+		b, err := t.peekByte()
+		if err != nil && !errors.Is(err, io.EOF) {
+			return yieldErrorOr(err, nil)
+		}
+		if err == nil && b == '/' {
 			if _, err := t.next(); err != nil { // consume the peeked second '/'
 				return yieldErrorOr(err, nil)
 			}
@@ -270,7 +281,7 @@ func tokenizeString(start Pos) tokenizerAction {
 			}
 			value = utf8.AppendRune(value, r)
 			if r == '\'' {
-				if b, ok := t.peekByte(); ok && b == '\'' {
+				if b, err := t.peekByte(); err == nil && b == '\'' {
 					escaped, err := t.next() // consume the peeked second '\''
 					if err != nil {
 						yield(Token{}, err)
