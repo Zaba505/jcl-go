@@ -51,6 +51,44 @@ func TestTokenizer(t *testing.T) {
 			},
 		},
 		{
+			name: "null statement",
+			src:  "//\n",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+			},
+		},
+		{
+			name: "delimiter statement",
+			src:  "/*",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("/*")},
+			},
+		},
+		{
+			name: "comment statement",
+			src:  "//* THIS STEP COMPILES THE PROGRAM",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("//* THIS STEP COMPILES THE PROGRAM")},
+			},
+		},
+		{
+			name: "empty comment statement",
+			src:  "//*",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("//*")},
+			},
+		},
+		{
+			name: "comment statement before a statement",
+			src:  "//* A COMMENT\n//MYJOB JOB",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("//* A COMMENT")},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenIdentifier, Value: []byte("MYJOB")},
+				{Pos: Pos{Line: 2, Column: 9}, Type: TokenIdentifier, Value: []byte("JOB")},
+			},
+		},
+		{
 			name: "name",
 			src:  "MYJOB",
 			expected: []Token{

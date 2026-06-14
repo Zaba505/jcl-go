@@ -187,8 +187,8 @@ func skipWhitespace(next tokenizerAction) tokenizerAction {
 // the qualifiers of a data set name (A.B.C); the * (back-reference, in-stream
 // star) and the + - signs are single symbols the parser reassembles with their
 // neighbors. A rune that begins no recognized lexeme yields an
-// [UnexpectedCharacterError]. The & symbolic-parameter introducer, //* comments,
-// and line continuation are deferred to later stories.
+// [UnexpectedCharacterError]. The & symbolic-parameter introducer and line
+// continuation are deferred to later stories.
 func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	return skipWhitespace(func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		pos := t.pos
@@ -221,26 +221,85 @@ func yieldSymbol(pos Pos, value []byte) tokenizerAction {
 	return yieldTokenThen(Token{Pos: pos, Type: TokenSymbol, Value: value}, tokenizeJCL)
 }
 
-// tokenizeStatementIdentifier scans the "//" statement identifier, the first '/'
-// already consumed at start. This slice does not enforce column positioning, so
-// "//" is recognized wherever a lexeme may begin; column-1–2 enforcement is
-// deferred. Only the "//" form is recognized in this slice; the "//*" comment
-// and "/*" delimiter identifiers are deferred, so a lone '/' (or a '/' at end of
-// input) is unexpected. A non-EOF read error from the lookahead is propagated.
+// tokenizeStatementIdentifier dispatches on the rune following the first '/'
+// (already consumed at start) to one of the three identifiers that begin with a
+// slash: "//" (statement identifier, or — with nothing after it on the record —
+// a null statement), "//*" (a comment statement, scanned whole as one
+// [TokenComment] by [tokenizeComment]), and "/*" (a delimiter statement). This
+// slice does not enforce column positioning, so each is recognized wherever a
+// lexeme may begin; column-1–2 enforcement is deferred. A lone '/' — followed by
+// neither '/' nor '*' (including at end of input) — is unexpected. A non-EOF
+// read error from the lookahead is propagated.
 func tokenizeStatementIdentifier(start Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		b, err := t.peekByte()
 		if err != nil && !errors.Is(err, io.EOF) {
 			return yieldErrorOr(err, nil)
 		}
-		if err == nil && b == '/' {
+		switch {
+		case err == nil && b == '/':
 			if _, err := t.next(); err != nil { // consume the peeked second '/'
 				return yieldErrorOr(err, nil)
 			}
-			return yieldSymbol(start, []byte("//"))
+			return tokenizeAfterDoubleSlash(start)
+		case err == nil && b == '*':
+			if _, err := t.next(); err != nil { // consume the peeked '*'
+				return yieldErrorOr(err, nil)
+			}
+			return yieldSymbol(start, []byte("/*"))
+		default:
+			yield(Token{}, UnexpectedCharacterError{Pos: start, Char: '/'})
+			return nil
 		}
-		yield(Token{}, UnexpectedCharacterError{Pos: start, Char: '/'})
-		return nil
+	}
+}
+
+// tokenizeAfterDoubleSlash decides between the "//" statement identifier and the
+// "//*" comment statement, both leading slashes already consumed at start. A '*'
+// next continues with [tokenizeComment]; anything else (a name, a blank, or end
+// of input) emits the bare "//" [TokenSymbol] and resumes top-level dispatch — a
+// lone "//" on a record is a null statement, which the parser recognizes by the
+// absence of a following operation. A non-EOF read error from the lookahead is
+// propagated.
+func tokenizeAfterDoubleSlash(start Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		b, err := t.peekByte()
+		if err != nil && !errors.Is(err, io.EOF) {
+			return yieldErrorOr(err, nil)
+		}
+		if err == nil && b == '*' {
+			if _, err := t.next(); err != nil { // consume the peeked '*'
+				return yieldErrorOr(err, nil)
+			}
+			return tokenizeComment(start)
+		}
+		return yieldSymbol(start, []byte("//"))
+	}
+}
+
+// tokenizeComment scans a "//*" comment statement, the "//*" already consumed at
+// start, and emits the whole record — from "//*" through the text before the
+// record boundary — as one [TokenComment]. The comment carries no syntactic
+// content, so its runes are accumulated verbatim rather than tokenized. The
+// terminating newline is backed up so [skipWhitespace] consumes it; end of input
+// ends the comment. (The comment statement may run to column 80, the one
+// exception to the column-71 rule; column enforcement is deferred.)
+func tokenizeComment(start Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		value := []byte("//*")
+		for {
+			pos := t.pos
+			r, err := t.next()
+			if err != nil {
+				tok := Token{Pos: start, Type: TokenComment, Value: value}
+				return yieldTokenThen(tok, yieldErrorOr(err, nil))
+			}
+			if r == '\n' {
+				tok := Token{Pos: start, Type: TokenComment, Value: value}
+				return yieldErrorOr(t.backup(pos), yieldTokenThen(tok, tokenizeJCL))
+			}
+			value = utf8.AppendRune(value, r)
+		}
 	}
 }
 
