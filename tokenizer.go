@@ -177,7 +177,7 @@ func skipWhitespace(next tokenizerAction) tokenizerAction {
 // This slice recognizes the lexemes of a minimal job: the "//" statement
 // identifier, name/operation/keyword/value runs (all [TokenIdentifier], the
 // parser classifies them by field position), apostrophe-delimited quoted
-// strings, and the symbols ( ) , = . A rune that begins no recognized lexeme
+// strings, and the ( ) , = symbols. A rune that begins no recognized lexeme
 // yields an [UnexpectedCharacterError]. Numbers, the . * & + - symbols, //*
 // comments, and line continuation are deferred to later stories.
 func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
@@ -216,7 +216,9 @@ func yieldSymbol(pos Pos, value []byte) tokenizerAction {
 func tokenizeStatementIdentifier(start Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		if b, ok := t.peekByte(); ok && b == '/' {
-			_, _ = t.next() // consume the peeked second '/'
+			if _, err := t.next(); err != nil { // consume the peeked second '/'
+				return yieldErrorOr(err, nil)
+			}
 			return yieldSymbol(start, []byte("//"))
 		}
 		yield(Token{}, UnexpectedCharacterError{Pos: start, Char: '/'})
@@ -269,7 +271,11 @@ func tokenizeString(start Pos) tokenizerAction {
 			value = utf8.AppendRune(value, r)
 			if r == '\'' {
 				if b, ok := t.peekByte(); ok && b == '\'' {
-					escaped, _ := t.next()
+					escaped, err := t.next() // consume the peeked second '\''
+					if err != nil {
+						yield(Token{}, err)
+						return nil
+					}
 					value = utf8.AppendRune(value, escaped)
 					continue
 				}
