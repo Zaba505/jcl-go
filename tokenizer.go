@@ -12,6 +12,7 @@ import (
 	"io"
 	"iter"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Pos represents the position of a token in the input.
@@ -106,6 +107,20 @@ func (t *tokenizer) backup(previousPos Pos) error {
 	return nil
 }
 
+// peekByte returns the next unread byte without consuming it (so the position is
+// unchanged), reporting false at end of input or on any read error. The lexemes
+// that need lookahead here — the second '/' of the "//" identifier and the
+// doubled apostrophe inside a quoted string — are all ASCII, so a byte is enough.
+// [bufio.Reader.Peek] invalidates a subsequent UnreadRune, so a byte peeked here
+// must be consumed with [tokenizer.next], never put back with [tokenizer.backup].
+func (t *tokenizer) peekByte() (byte, bool) {
+	b, _ := t.buf.Peek(1)
+	if len(b) == 0 {
+		return 0, false
+	}
+	return b[0], true
+}
+
 // tokenizerAction is one step of the tokenizer state machine: it reads some
 // runes, optionally calls yield to emit a [Token], and returns the next action
 // to run. Returning nil ends iteration.
@@ -159,11 +174,12 @@ func skipWhitespace(next tokenizerAction) tokenizerAction {
 // tokenizeJCL is the entry-point action. It skips leading whitespace, then
 // dispatches on the next rune to a specific sub-tokenizer.
 //
-// This is a scaffold: empty (or whitespace-only) input produces no tokens, and
-// the dispatch switch is not yet wired up, so any content rune yields an
-// [UnexpectedCharacterError]. The implementer replaces the placeholder branch
-// with the per-token-class dispatch (comments, identifiers, symbols, strings,
-// numbers).
+// This slice recognizes the lexemes of a minimal job: the "//" statement
+// identifier, name/operation/keyword/value runs (all [TokenIdentifier], the
+// parser classifies them by field position), apostrophe-delimited quoted
+// strings, and the symbols ( ) , = . A rune that begins no recognized lexeme
+// yields an [UnexpectedCharacterError]. Numbers, the . * & + - symbols, //*
+// comments, and line continuation are deferred to later stories.
 func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	return skipWhitespace(func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		pos := t.pos
@@ -171,11 +187,109 @@ func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		if err != nil {
 			return yieldErrorOr(err, nil)
 		}
-		// TODO: dispatch on r to a sub-tokenizer (see CLAUDE.md). Until then any
-		// content rune is unexpected.
-		yield(Token{}, UnexpectedCharacterError{Pos: pos, Char: r})
-		return nil
+		switch {
+		case r == '/':
+			return tokenizeStatementIdentifier(pos)
+		case r == '\'':
+			return tokenizeString(pos)
+		case r == '(' || r == ')' || r == ',' || r == '=':
+			return yieldSymbol(pos, utf8.AppendRune(nil, r))
+		case isNameStart(r):
+			return tokenizeName(pos, r)
+		default:
+			yield(Token{}, UnexpectedCharacterError{Pos: pos, Char: r})
+			return nil
+		}
 	})
+}
+
+// yieldSymbol emits a single punctuation/operator [TokenSymbol], then resumes
+// the top-level dispatch.
+func yieldSymbol(pos Pos, value []byte) tokenizerAction {
+	return yieldTokenThen(Token{Pos: pos, Type: TokenSymbol, Value: value}, tokenizeJCL)
+}
+
+// tokenizeStatementIdentifier scans the "//" statement identifier in columns
+// 1–2, the first '/' already consumed at start. Only the "//" form is recognized
+// in this slice; the "//*" comment and "/*" delimiter identifiers are deferred,
+// so a lone '/' (or a '/' at end of input) is unexpected.
+func tokenizeStatementIdentifier(start Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		if b, ok := t.peekByte(); ok && b == '/' {
+			t.next() // consume the second '/'
+			return yieldSymbol(start, []byte("//"))
+		}
+		yield(Token{}, UnexpectedCharacterError{Pos: start, Char: '/'})
+		return nil
+	}
+}
+
+// tokenizeName accumulates a maximal run of name/value runes (letters, digits,
+// national characters), beginning with first already consumed at start. Names,
+// operations, keywords, and unquoted values are lexically identical — all emit
+// as [TokenIdentifier]; the parser classifies them by field position. A non-name
+// rune is backed up so the next action re-reads it; end of input ends the run.
+func tokenizeName(start Pos, first rune) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		value := utf8.AppendRune(nil, first)
+		for {
+			pos := t.pos
+			r, err := t.next()
+			if err != nil {
+				tok := Token{Pos: start, Type: TokenIdentifier, Value: value}
+				return yieldTokenThen(tok, yieldErrorOr(err, nil))
+			}
+			if !isNameContinue(r) {
+				tok := Token{Pos: start, Type: TokenIdentifier, Value: value}
+				return yieldErrorOr(t.backup(pos), yieldTokenThen(tok, tokenizeJCL))
+			}
+			value = utf8.AppendRune(value, r)
+		}
+	}
+}
+
+// tokenizeString scans an apostrophe-delimited quoted string, the opening
+// apostrophe already consumed at start. Two consecutive apostrophes are an
+// escaped apostrophe, not the close. The raw lexeme including both delimiters becomes the
+// token value. Reaching end of input first yields an [UnterminatedStringError];
+// any other read error propagates verbatim. Continuation across records is
+// deferred to a later story.
+func tokenizeString(start Pos) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		value := []byte{'\''}
+		for {
+			r, err := t.next()
+			if err != nil {
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					err = UnterminatedStringError{Pos: start}
+				}
+				yield(Token{}, err)
+				return nil
+			}
+			value = utf8.AppendRune(value, r)
+			if r == '\'' {
+				if b, ok := t.peekByte(); ok && b == '\'' {
+					escaped, _ := t.next()
+					value = utf8.AppendRune(value, escaped)
+					continue
+				}
+				tok := Token{Pos: start, Type: TokenString, Value: value}
+				return yieldTokenThen(tok, tokenizeJCL)
+			}
+		}
+	}
+}
+
+// isNameStart reports whether r may begin a JCL name or unquoted value: an ASCII
+// letter or a national character (@ $ #). Digits begin numbers, not names.
+func isNameStart(r rune) bool {
+	return ('A' <= r && r <= 'Z') || ('a' <= r && r <= 'z') || r == '@' || r == '$' || r == '#'
+}
+
+// isNameContinue reports whether r may appear after the first rune of a JCL name
+// or unquoted value: a letter, digit, or national character.
+func isNameContinue(r rune) bool {
+	return isNameStart(r) || ('0' <= r && r <= '9')
 }
 
 // UnexpectedCharacterError is returned by the tokenizer when it encounters a
@@ -188,4 +302,15 @@ type UnexpectedCharacterError struct {
 // Error implements the [error] interface.
 func (e UnexpectedCharacterError) Error() string {
 	return fmt.Sprintf("unexpected character '%c' at line %d, column %d", e.Char, e.Pos.Line, e.Pos.Column)
+}
+
+// UnterminatedStringError is returned when a quoted string is not closed before
+// the end of input.
+type UnterminatedStringError struct {
+	Pos Pos
+}
+
+// Error implements the [error] interface.
+func (e UnterminatedStringError) Error() string {
+	return fmt.Sprintf("unterminated string starting at line %d, column %d", e.Pos.Line, e.Pos.Column)
 }
