@@ -76,14 +76,14 @@ identifier field in columns 1–2 (or 1–3), then scan the remaining fields in
 ignoring columns 73–80. Every byte of a well-formed statement (once the column
 areas are accounted for) belongs to exactly one of the token classes below.
 
-The package seeds a `TokenType` enum (`Comment`, `Identifier`, `Symbol`,
-`String`, `Number`); the classes below are the authoritative lexical classes and
-note the seed value each maps to.
+The package seeds a `TokenType` enum (`TokenComment`, `TokenIdentifier`,
+`TokenSymbol`, `TokenString`, `TokenNumber`); the classes below are the
+authoritative lexical classes and note the seed value each maps to.
 
 | Token class | Maps to seed `TokenType` | Role |
 |---|---|---|
-| `StatementIdentifier` | `TokenSymbol` | `//`, `//*`, `/*`, or a DLM-defined delimiter in columns 1–2(–3) |
-| `Name` | `TokenIdentifier` | name-field label: jobname, stepname, ddname, procname, IF/ELSE/ENDIF label |
+| `StatementIdentifier` | `TokenSymbol` | `//` or `/*` (and DLM-defined delimiters) in columns 1–2. The `//*` comment statement is **not** here — it is scanned whole as one `Comment` token (see below). |
+| `Name` | `TokenIdentifier` | the general alphanumeric/national identifier segment: a name-field label (jobname, stepname, ddname, procname, IF/ELSE/ENDIF label) **and** the unquoted segments inside a value (`Scalar`, e.g. each part of `A.B.C`) |
 | `Operation` | `TokenIdentifier` | statement verb: `JOB`, `EXEC`, `DD`, … (see [Keywords](#keywords-and-reserved-words)) |
 | `Keyword` | `TokenIdentifier` | parameter / subparameter keyword (`PGM`, `DSN`, `DISP`, `MEMBER`, …) and IF keywords (`THEN`, `RC`, `ABEND`) |
 | `Value` | `TokenIdentifier` | an unquoted operand value (program name, disposition, device type, qualified data set name) |
