@@ -111,16 +111,16 @@ func (*Scalar) isValue()           {}
 func (*QuotedString) isValue()     {}
 func (*SubparameterList) isValue() {}
 
-// Scalar is an unquoted value: a single alphanumeric/national run (a Name or
-// Number token). Qualified names (A.B.C) are a later story.
+// Scalar is an unquoted value: a single alphanumeric/national run (a
+// [TokenIdentifier]). Numbers and qualified names (A.B.C) are a later story.
 type Scalar struct {
 	Pos  Pos
 	Text string
 }
 
 // QuotedString is an apostrophe-delimited value. Value is the decoded text: the
-// surrounding apostrophes are stripped and each doubled apostrophe (”) is
-// collapsed to a single one.
+// surrounding apostrophes are stripped and each escaped apostrophe — coded as a
+// pair of apostrophes in the source — is collapsed to a single one.
 type QuotedString struct {
 	Pos   Pos
 	Value string
@@ -243,7 +243,7 @@ func (p *parser) statementHeader() (name *Name, op Token, err error) {
 		return nil, Token{}, err
 	}
 	if !isSymbol(id, "//") {
-		return nil, Token{}, UnexpectedTokenError{Expected: []TokenType{TokenSymbol}, Actual: id}
+		return nil, Token{}, UnexpectedSymbolError{Expected: []string{"//"}, Actual: id}
 	}
 
 	op, err = p.expect(TokenIdentifier)
@@ -445,7 +445,7 @@ func parseSubparameterList(p *parser) (*SubparameterList, error) {
 		return nil, err
 	}
 	if !isSymbol(open, "(") {
-		return nil, UnexpectedTokenError{Expected: []TokenType{TokenSymbol}, Actual: open}
+		return nil, UnexpectedSymbolError{Expected: []string{"("}, Actual: open}
 	}
 
 	list := &SubparameterList{Pos: open.Pos}
@@ -478,7 +478,7 @@ func parseSubparameter(p *parser, list *SubparameterList) (parserAction[*Subpara
 	case isSymbol(tok, ")"):
 		return nil, nil
 	default:
-		return nil, UnexpectedTokenError{Expected: []TokenType{TokenSymbol}, Actual: tok}
+		return nil, UnexpectedSymbolError{Expected: []string{",", ")"}, Actual: tok}
 	}
 }
 
@@ -499,7 +499,8 @@ func valuePos(v Value) Pos {
 
 // decodeQuotedString decodes a raw quoted-string lexeme (apostrophes included,
 // doubled apostrophes for escapes) into its text value: the surrounding
-// apostrophes are stripped and each "”" is collapsed to a single "'".
+// apostrophes are stripped and each pair of apostrophes is collapsed to a
+// single apostrophe.
 func decodeQuotedString(raw []byte) string {
 	if len(raw) >= 2 {
 		raw = raw[1 : len(raw)-1]
@@ -537,6 +538,21 @@ type UnexpectedTokenError struct {
 // Error implements the [error] interface.
 func (e UnexpectedTokenError) Error() string {
 	return fmt.Sprintf("unexpected token %s at line %d, column %d, expected one of %v", e.Actual, e.Actual.Pos.Line, e.Actual.Pos.Column, e.Expected)
+}
+
+// UnexpectedSymbolError is returned when the parser reads a symbol token whose
+// value is not one it expected in that position (e.g. a statement that does not
+// open with "//", a subparameter list missing its "(", or a list item not
+// followed by "," or ")"). Unlike [UnexpectedTokenError], the actual token is a
+// symbol; the mismatch is its value, not its type.
+type UnexpectedSymbolError struct {
+	Expected []string
+	Actual   Token
+}
+
+// Error implements the [error] interface.
+func (e UnexpectedSymbolError) Error() string {
+	return fmt.Sprintf("unexpected symbol %q at line %d, column %d, expected one of %v", string(e.Actual.Value), e.Actual.Pos.Line, e.Actual.Pos.Column, e.Expected)
 }
 
 // UnexpectedOperationError is returned when a statement's operation field holds
