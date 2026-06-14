@@ -183,9 +183,12 @@ func skipWhitespace(next tokenizerAction) tokenizerAction {
 // parameter fields: the "//" statement identifier, name/operation/keyword/value
 // runs (all [TokenIdentifier], the parser classifies them by field position),
 // apostrophe-delimited quoted strings, digit-run numbers ([TokenNumber], used
-// for numeric subparameters), and the ( ) , = symbols. A rune that begins no
-// recognized lexeme yields an [UnexpectedCharacterError]. The . * & + - symbols,
-// //* comments, and line continuation are deferred to later stories.
+// for numeric subparameters), and the ( ) , = . * + - symbols. The . separates
+// the qualifiers of a data set name (A.B.C); the * (back-reference, in-stream
+// star) and the + - signs are single symbols the parser reassembles with their
+// neighbors. A rune that begins no recognized lexeme yields an
+// [UnexpectedCharacterError]. The & symbolic-parameter introducer, //* comments,
+// and line continuation are deferred to later stories.
 func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 	return skipWhitespace(func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		pos := t.pos
@@ -198,7 +201,8 @@ func tokenizeJCL(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 			return tokenizeStatementIdentifier(pos)
 		case r == '\'':
 			return tokenizeString(pos)
-		case r == '(' || r == ')' || r == ',' || r == '=':
+		case r == '(' || r == ')' || r == ',' || r == '=' ||
+			r == '.' || r == '*' || r == '+' || r == '-':
 			return yieldSymbol(pos, utf8.AppendRune(nil, r))
 		case isDigit(r):
 			return tokenizeNumber(pos, r)

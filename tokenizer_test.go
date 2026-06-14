@@ -121,6 +121,84 @@ func TestTokenizer(t *testing.T) {
 			},
 		},
 		{
+			name: "quoted string with delimiters",
+			src:  "'DSN=A.B.C,DISP=SHR'",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenString, Value: []byte("'DSN=A.B.C,DISP=SHR'")},
+			},
+		},
+		{
+			name: "period symbol",
+			src:  ".",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte(".")},
+			},
+		},
+		{
+			name: "asterisk symbol",
+			src:  "*",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("*")},
+			},
+		},
+		{
+			name: "plus symbol",
+			src:  "+",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("+")},
+			},
+		},
+		{
+			name: "minus symbol",
+			src:  "-",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("-")},
+			},
+		},
+		{
+			name: "qualified data set name",
+			src:  "A.B.C",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("B")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("C")},
+			},
+		},
+		{
+			name: "keyword with qualified data set name value",
+			src:  "DSN=PROD.PAYROLL.MASTER",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenIdentifier, Value: []byte("DSN")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("PROD")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenSymbol, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenIdentifier, Value: []byte("PAYROLL")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenSymbol, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 18}, Type: TokenIdentifier, Value: []byte("MASTER")},
+			},
+		},
+		{
+			name: "back-reference value",
+			src:  "*.OUT",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("*")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("OUT")},
+			},
+		},
+		{
+			name: "gdg relative generation",
+			src:  "(-1)",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenSymbol, Value: []byte("-")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenNumber, Value: []byte("1")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte(")")},
+			},
+		},
+		{
 			name: "job statement",
 			src:  "//MYJOB    JOB  (ACCT),'A PROGRAMMER',CLASS=A,MSGCLASS=X",
 			expected: []Token{
