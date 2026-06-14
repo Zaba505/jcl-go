@@ -1,0 +1,11 @@
+# golangci-lint configuration.
+#
+# While the package is a scaffold, the documented helper functions
+# (expect, write, writef, writeThen, yieldTokenThen, ...) exist ahead of
+# the code that calls them. Disable the `unused` linter until the
+# tokenizer/parser/printer entry points are filled in.
+version: "2"
+
+linters:
+  disable:
+    - unused
