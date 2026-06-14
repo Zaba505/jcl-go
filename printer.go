@@ -10,11 +10,11 @@ import (
 	"io"
 )
 
-// Print the given [File] to the given writer as JCL source.
-func Print(w io.Writer, f *File) error {
+// Print the given [Job] to the given writer as JCL source.
+func Print(w io.Writer, j *Job) error {
 	pr := &printer{w: w}
-	for action := printFile; action != nil && pr.err == nil; {
-		action = action(pr, f)
+	for action := printJob; action != nil && pr.err == nil; {
+		action = action(pr, j)
 	}
 	return pr.err
 }
@@ -45,20 +45,20 @@ func (pr *printer) writef(format string, args ...any) {
 // and returns the next action. Returning nil ends printing. Errors are
 // accumulated in pr.err rather than returned, so the driver loop stops on the
 // first write failure.
-type printerAction func(pr *printer, f *File) printerAction
+type printerAction func(pr *printer, j *Job) printerAction
 
 // writeThen writes a string and returns the next action — the printer
 // equivalent of [yieldTokenThen].
 func writeThen(s string, next printerAction) printerAction {
-	return func(pr *printer, f *File) printerAction {
+	return func(pr *printer, j *Job) printerAction {
 		pr.write(s)
 		return next
 	}
 }
 
-// printFile is the entry action. It is a scaffold: the empty (zero-value) *File
-// prints nothing, so it ends immediately. The implementer wires the per-node
-// printing here.
-func printFile(pr *printer, f *File) printerAction {
+// printJob is the entry action. It is a scaffold: the empty (zero-value) *Job
+// prints nothing, so it ends immediately. Per-node printing is wired up in a
+// later story.
+func printJob(pr *printer, j *Job) printerAction {
 	return nil
 }

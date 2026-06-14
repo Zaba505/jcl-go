@@ -8,7 +8,7 @@ language. The structure and conventions mirror the sibling libraries
 `Zaba505/cobol-go` and `z5labs/avro-go/idl`.
 
 ```
-source ── Tokenize ─► iter.Seq2[Token, error] ── Parse ─► *File (AST) ── Print ─► source
+source ── Tokenize ─► iter.Seq2[Token, error] ── Parse ─► *Job (AST) ── Print ─► source
               │                                     │                       │
          tokenizer.go                           parser.go               printer.go
 ```
@@ -21,7 +21,7 @@ to run (or `nil` to stop). A small driver loop calls actions until one returns
 
 > **Status:** this package is a scaffold. The tokenizer, parser, and printer
 > compile and pass an empty-input round-trip, but no real tokens or AST nodes
-> exist yet. The entry-point actions (`tokenizeJCL`, `parseFile`, `printFile`)
+> exist yet. The entry-point actions (`tokenizeJCL`, `parseJob`, `printJob`)
 > are stubs marked with `TODO`; fill them in against a `SPEC.md` extracted from
 > the JCL reference.
 
@@ -44,7 +44,7 @@ type tokenizerAction func(t *tokenizer, yield func(Token, error) bool) tokenizer
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 ```
 
-- Generic over the AST node being built (e.g. `*File`, and later the concrete
+- Generic over the AST node being built (e.g. `*Job`, and later the concrete
   statement nodes).
 - Return `(nil, nil)` to complete successfully.
 - Return `(nil, err)` to terminate with an error — every error path returns
@@ -53,7 +53,7 @@ type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 ### Printer Actions
 
 ```go
-type printerAction func(pr *printer, f *File) printerAction
+type printerAction func(pr *printer, j *Job) printerAction
 ```
 
 - Each action writes some output and returns the next action; return `nil` to
@@ -114,11 +114,12 @@ with `errors.As`.
 
 ## Parser (`parser.go`)
 
-`Parse(r io.Reader) (*File, error)` converts the push-based tokenizer to
+`Parse(r io.Reader) (*Job, error)` converts the push-based tokenizer to
 pull-based with `iter.Pull2(Tokenize(r))` (`defer stop()`), then runs the
-top-level action loop against a `*File`. `File` is the root AST node — a thin
-container with no position of its own; every node below it carries a `Pos`,
-mirroring `go/ast`.
+top-level action loop against a `*Job`. `Job` is the root AST node for a parsed
+job — a thin container with no position of its own; every node below it carries a
+`Pos`, mirroring `go/ast`. (Standalone cataloged procedures parse via a separate
+entry point in a later story.)
 
 ### `expect`
 
@@ -160,7 +161,7 @@ fast implementer is most likely to break.**
 
 ## Printer (`printer.go`)
 
-`Print(w io.Writer, f *File) error` runs the action loop, checking `pr.err` each
+`Print(w io.Writer, j *Job) error` runs the action loop, checking `pr.err` each
 iteration. The `printer` wraps an `io.Writer` and stores `err error`; every write
 goes through `pr.write(s)` or `pr.writef(format, args...)`, which short-circuit
 when `pr.err != nil`. Use `writeThen(s, next)` for the common
@@ -189,12 +190,12 @@ them right early saves debugging later.
 
 ### Parser tests
 
-Source string in, `*File` out via the public `Parse()`. **Drive `Parse()` with
-real source strings, then assert the result against a hand-built expected `*File`
+Source string in, `*Job` out via the public `Parse()`. **Drive `Parse()` with
+real source strings, then assert the result against a hand-built expected `*Job`
 with `require.Equal`** — positions included, in the `avro-go/idl` and `cobol-go`
 parser-test style this package is modeled on. Specify exact `Pos` for every node
 (copy them from the matching tokenizer test). The empty-input case asserting
-`&File{}` is the one exception to "drive `Parse()` for every expected value".
+`&Job{}` is the one exception to "drive `Parse()` for every expected value".
 Failure-path subtests use `require.ErrorAs` for typed errors and
 `require.ErrorIs` for sentinels.
 
@@ -202,7 +203,7 @@ Failure-path subtests use `require.ErrorAs` for typed errors and
 
 Two shapes, both required for every printer method once real ones exist:
 
-1. **Direct** — explicit `*File` in, expected string out. Pins down formatting
+1. **Direct** — explicit `*Job` in, expected string out. Pins down formatting
    (whitespace, punctuation) the round-trip can't see.
 2. **Round-trip** — `Parse → Print → Parse`, comparing the two ASTs. The printer
    reformats canonically, so once nodes carry positions, compare **ignoring
