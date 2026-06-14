@@ -37,9 +37,10 @@ to the story that implements each statement; this document specifies the
 > or AST nodes exist yet. A minimal one-step job (JOB + EXEC) is the first
 > vertical slice; statement and parameter breadth follow in batches. Cataloged
 > procedures and INCLUDE groups stored in separate files are parsed standalone
-> and resolved into an effective job later (`ParseProc` / `Expand`); their
-> resolution detail is summarized in [Semantics](#semantics) but not fully
-> specified here.
+> and resolved into an effective job later by a planned resolution step (proposed
+> names `ParseProc` / `Expand` — **not yet implemented**; no such symbols exist in
+> the package today); its resolution detail is summarized in
+> [Semantics](#semantics) but not fully specified here.
 
 **Grammar notation.** Productions are written in **EBNF**: `=` defines a
 production, `|` separates alternatives, `[ … ]` marks an optional element,
@@ -88,7 +89,7 @@ note the seed value each maps to.
 | `Value` | `TokenIdentifier` | an unquoted operand value (program name, disposition, device type, qualified data set name) |
 | `Number` | `TokenNumber` | an unquoted numeric value (return code, space quantity) |
 | `QuotedString` | `TokenString` | an apostrophe-delimited literal `'…'` |
-| `SymbolicParameter` | *(new)* | `&name` JCL/system symbol, or `&&name` temporary-data-set / literal-ampersand form |
+| `SymbolicParameter` | `TokenIdentifier`, or `TokenSymbol` (`&`/`&&`) + `TokenIdentifier` | `&name` JCL/system symbol, or `&&name` temporary-data-set / literal-ampersand form |
 | `Comment` | `TokenComment` | a `//*` comment statement, or the comments field trailing the parameter field |
 | `Symbol` | `TokenSymbol` | the syntactic punctuation and operators: `, = ( ) .` and the IF operators `> < >= <= ¬ & \|` |
 
@@ -385,9 +386,11 @@ optional parameter field, optional comments — captured once and then specializ
 per operation. Field forms are taken from *Table 8. JCL Statement Fields*.
 
 ```ebnf
-(* shared skeleton *)
-Name           = NameToken ;                       (* 1–8 alnum/national, begins col 3 *)
-Comments       = { CommentText } ;                 (* free text, ignored *)
+(* shared skeleton — Name, Number, QuotedString, SymbolicParameter, Keyword,
+   Comment, and Symbol are terminal token classes from "Lexical Elements" above;
+   Blank is one or more spaces; Newline is the record boundary after
+   continuation reassembly. *)
+Comments       = Comment ;                          (* trailing comments field, ignored *)
 
 (* JOB: name is required *)
 JobStatement   = "//" Name Blank "JOB" [ Blank ParameterField ]
@@ -407,6 +410,7 @@ InStreamDD     = "//" [ Name ] Blank "DD" Blank ( "*" | "DATA" )
                  [ "," ParameterField ] Newline
                  InStreamData
                  DelimiterStatement ;                (* /* or DLM-defined delimiter *)
+InStreamData   = { DataRecord } ;                    (* verbatim input lines; see note below *)
 
 (* PROC / PEND: in-stream procedure brackets; cataloged PROC may also stand alone *)
 ProcStatement  = "//" [ Name ] Blank "PROC" [ Blank ParameterField ]
@@ -434,10 +438,17 @@ ElseStatement  = "//" [ Name ] Blank "ELSE" [ Blank Comments ] Newline ;
 EndifStatement = "//" [ Name ] Blank "ENDIF" [ Blank Comments ] Newline ;
 
 (* trivial statements *)
-CommentStatement   = "//*" CommentText Newline ;
+CommentStatement   = Comment Newline ;              (* Comment token spans "//*" to end of record *)
 NullStatement      = "//" Newline ;
 DelimiterStatement = "/*" [ Blank Comments ] Newline ;
 ```
+
+- **In-stream data.** `DataRecord` is one physical record passed through
+  **verbatim** — it is *not* tokenized as JCL. The block runs from the record
+  after a `DD *` / `DD DATA` statement up to (but not including) its delimiter
+  statement (`/*` by default, or the value named by `DLM=`). For `DD *` a record
+  beginning with `//` also ends the block; for `DD DATA` only the explicit
+  delimiter does.
 
 **Parameter field** (the general grammar — the per-statement keyword catalog is
 out of scope; *Chapter 4, Parameter field*):
@@ -454,7 +465,7 @@ Subparameter     = PositionalParameter | KeywordParameter ;   (* may be empty: n
 Value            = Scalar { "." Scalar }              (* qualified name: A.B.C *)
                  | QuotedString
                  | SymbolicParameter ;
-Scalar           = Word | Number ;                    (* alnum/national run, or a number *)
+Scalar           = Name | Number ;                    (* alnum/national run (Name token), or a number *)
 ```
 
 - A `Keyword "=" SubparameterList` covers `DISP=(NEW,KEEP,DELETE)`,
@@ -473,7 +484,7 @@ RelExpr     = RelTerm { LogicalOp RelTerm } ;
 RelTerm     = [ NotOp ] ( "(" RelExpr ")" | Comparison ) ;
 Comparison  = CondOperand [ CompareOp Number ] ;
 CondOperand = "RC" | "ABEND" | "ABENDCC" | "RUN"
-            | StepName [ "." ProcStepName ] [ "." "RC" | "." "ABEND" | "." "RUN" ] ;
+            | Name [ "." Name ] [ "." ( "RC" | "ABEND" | "RUN" ) ] ;  (* stepname[.procstepname][.status] *)
 CompareOp   = ">" | "<" | ">=" | "<=" | "=" | "¬=" | "¬>" | "¬<"
             | "GT" | "LT" | "GE" | "LE" | "EQ" | "NE" | "NG" | "NL" ;
 LogicalOp   = "&" | "|" | "AND" | "OR" ;
@@ -525,8 +536,8 @@ beyond whether a statement merely parses.
   on a single EXEC). A symbol may be **nullified** (assigned empty), which
   removes it and any delimiting period from the text. The same symbol may take
   different texts at different points in a job. *The package parses symbols as
-  AST nodes; whether and when it performs substitution (`Expand`) is a separate
-  resolution step, not part of `Parse`.*
+  AST nodes; whether and when it performs substitution (a planned `Expand` step,
+  not yet implemented) is a separate resolution step, not part of `Parse`.*
 - **`&&name` temporary data sets.** `&&name` in a `DSNAME`/`DSN` denotes a
   temporary data set scoped to the job; the same `&&name` in a later step refers
   to the same temporary data set. A doubled ampersand inside an apostrophe value
@@ -536,9 +547,9 @@ beyond whether a statement merely parses.
   overrides applied. An `INCLUDE MEMBER=name` is replaced in place by the
   statements of the named INCLUDE group; included statements must be complete
   (an included statement cannot continue the statement preceding the `INCLUDE`).
-  Both are resolved against a procedure/INCLUDE library (`Expand` /
-  `ParseProc`); the effective job is the result of all substitutions and
-  splices.
+  Both are resolved against a procedure/INCLUDE library by the planned resolution
+  step (`Expand` / `ParseProc`, not yet implemented); the effective job is the
+  result of all substitutions and splices.
 - **Comments and null statements are non-semantic.** A `//*` comment, a trailing
   comments field, and a `//` null statement carry no execution meaning. The AST
   records them (so the printer can round-trip them) but they affect nothing
@@ -659,7 +670,8 @@ left to later stories or are outside the package's goal:
   `CNTL`/`ENDCNTL`, `EXPORT`, `XMIT`, and `SCHEDULE` statements.
 - Full **procedure/INCLUDE resolution** semantics (nested-procedure symbol
   scoping, override/merge rules) beyond the summary in [Semantics](#semantics);
-  the resolving API is `ParseProc` / `Expand`.
+  the planned resolving API (proposed names `ParseProc` / `Expand`) is not yet
+  implemented.
 - Runtime **evaluation** of IF relational expressions and COND processing (the
   package parses, it does not execute).
 - The complete **reserved-word / system-symbol** registries (e.g. the full set
