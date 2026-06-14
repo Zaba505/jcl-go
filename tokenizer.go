@@ -216,7 +216,7 @@ func yieldSymbol(pos Pos, value []byte) tokenizerAction {
 func tokenizeStatementIdentifier(start Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		if b, ok := t.peekByte(); ok && b == '/' {
-			t.next() // consume the second '/'
+			_, _ = t.next() // consume the peeked second '/'
 			return yieldSymbol(start, []byte("//"))
 		}
 		yield(Token{}, UnexpectedCharacterError{Pos: start, Char: '/'})
