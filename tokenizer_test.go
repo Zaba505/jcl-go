@@ -402,6 +402,102 @@ func TestTokenizer(t *testing.T) {
 				{Pos: Pos{Line: 2, Column: 21}, Type: TokenIdentifier, Value: []byte("IEFBR14")},
 			},
 		},
+		{
+			name: "operand continuation across records",
+			src:  "//A JOB (X),\n//   CLASS=A",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("JOB")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenSymbol, Value: []byte("(")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenIdentifier, Value: []byte("X")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenSymbol, Value: []byte(")")},
+				{Pos: Pos{Line: 1, Column: 12}, Type: TokenSymbol, Value: []byte(",")},
+				{Pos: Pos{Line: 2, Column: 6}, Type: TokenIdentifier, Value: []byte("CLASS")},
+				{Pos: Pos{Line: 2, Column: 11}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 2, Column: 12}, Type: TokenIdentifier, Value: []byte("A")},
+			},
+		},
+		{
+			name: "trailing comma at end of input",
+			src:  "//A JOB X,",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("JOB")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenIdentifier, Value: []byte("X")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenSymbol, Value: []byte(",")},
+			},
+		},
+		{
+			// A trailing comma is the authoritative operand-continuation signal, so
+			// the next "//" record is reassembled as a continuation even when its
+			// column 3 is non-blank — the tokenizer is lenient here and does not
+			// emit a second "//" or error.
+			name: "trailing comma merges the next record as a continuation",
+			src:  "//A JOB B,\n//C,D",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("JOB")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenIdentifier, Value: []byte("B")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenSymbol, Value: []byte(",")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenIdentifier, Value: []byte("C")},
+				{Pos: Pos{Line: 2, Column: 4}, Type: TokenSymbol, Value: []byte(",")},
+				{Pos: Pos{Line: 2, Column: 5}, Type: TokenIdentifier, Value: []byte("D")},
+			},
+		},
+		{
+			name: "trailing comments field",
+			src:  "//STEP1 EXEC PGM=IEFBR14 LOAD THE TABLE",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("STEP1")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 18}, Type: TokenIdentifier, Value: []byte("IEFBR14")},
+				{Pos: Pos{Line: 1, Column: 26}, Type: TokenComment, Value: []byte("LOAD THE TABLE")},
+			},
+		},
+		{
+			// Record 1 fills the comments field with "COMMENT" + blanks through
+			// column 71 and a non-blank continuation indicator in column 72; record
+			// 2 resumes after column 3. The two fragments reassemble into one
+			// TokenComment whose value preserves the interior blanks.
+			name: "comments field continuation",
+			src:  "//A EXEC PGM=B  COMMENT" + strings.Repeat(" ", 48) + "X" + "\n//  MORE",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 1, Column: 13}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenIdentifier, Value: []byte("B")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenComment, Value: []byte("COMMENT" + strings.Repeat(" ", 48) + "MORE")},
+			},
+		},
+		{
+			name: "sequence numbers in columns 73-80 are ignored",
+			src:  "//STEP1 EXEC PGM=IEFBR14" + strings.Repeat(" ", 48) + "00000010",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("STEP1")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 18}, Type: TokenIdentifier, Value: []byte("IEFBR14")},
+			},
+		},
+		{
+			// A digit run reaching column 71 is cut there; the runes at columns 72+
+			// are the continuation-indicator and sequence areas, not token content.
+			name: "token is cut off at the last significant column",
+			src:  strings.Repeat(" ", 69) + "12345",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 70}, Type: TokenNumber, Value: []byte("12")},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
