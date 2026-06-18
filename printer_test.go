@@ -26,6 +26,57 @@ func TestPrinter(t *testing.T) {
 			input:    &Job{},
 			expected: "",
 		},
+		{
+			name: "minimal job",
+			input: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "MYJOB"},
+					Parameters: []Parameter{
+						&PositionalParameter{
+							Pos: Pos{Line: 1, Column: 17},
+							Value: &SubparameterList{
+								Pos: Pos{Line: 1, Column: 17},
+								Items: []Parameter{
+									&PositionalParameter{
+										Pos:   Pos{Line: 1, Column: 18},
+										Value: &Scalar{Pos: Pos{Line: 1, Column: 18}, Text: "ACCT"},
+									},
+								},
+							},
+						},
+						&PositionalParameter{
+							Pos:   Pos{Line: 1, Column: 24},
+							Value: &QuotedString{Pos: Pos{Line: 1, Column: 24}, Value: "A PROGRAMMER"},
+						},
+						&KeywordParameter{
+							Pos:   Pos{Line: 1, Column: 39},
+							Name:  "CLASS",
+							Value: &Scalar{Pos: Pos{Line: 1, Column: 45}, Text: "A"},
+						},
+						&KeywordParameter{
+							Pos:   Pos{Line: 1, Column: 47},
+							Name:  "MSGCLASS",
+							Value: &Scalar{Pos: Pos{Line: 1, Column: 56}, Text: "X"},
+						},
+					},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "STEP1"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 17},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 21}, Text: "IEFBR14"},
+							},
+						},
+					},
+				},
+			},
+			expected: "//MYJOB    JOB  (ACCT),'A PROGRAMMER',CLASS=A,MSGCLASS=X\n//STEP1    EXEC PGM=IEFBR14\n",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -54,6 +105,10 @@ func TestPrinterRoundTrip(t *testing.T) {
 		{
 			name: "empty source",
 			src:  "",
+		},
+		{
+			name: "minimal job",
+			src:  "//MYJOB    JOB  (ACCT),'A PROGRAMMER',CLASS=A,MSGCLASS=X\n//STEP1    EXEC PGM=IEFBR14",
 		},
 	}
 
