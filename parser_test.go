@@ -82,6 +82,143 @@ func TestParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "exec operands with subparameter lists and numbers",
+			src:  "//J JOB\n//S EXEC PGM=IEFBR14,DISP=(NEW,CATLG,DELETE),SPACE=(TRK,(10,5))",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "IEFBR14"},
+							},
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 22},
+								Name: "DISP",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 27},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 28}, Value: &Scalar{Pos: Pos{Line: 2, Column: 28}, Text: "NEW"}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 32}, Value: &Scalar{Pos: Pos{Line: 2, Column: 32}, Text: "CATLG"}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 38}, Value: &Scalar{Pos: Pos{Line: 2, Column: 38}, Text: "DELETE"}},
+									},
+								},
+							},
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 46},
+								Name: "SPACE",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 52},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 53}, Value: &Scalar{Pos: Pos{Line: 2, Column: 53}, Text: "TRK"}},
+										&PositionalParameter{
+											Pos: Pos{Line: 2, Column: 57},
+											Value: &SubparameterList{
+												Pos: Pos{Line: 2, Column: 57},
+												Items: []Parameter{
+													&PositionalParameter{Pos: Pos{Line: 2, Column: 58}, Value: &Scalar{Pos: Pos{Line: 2, Column: 58}, Text: "10"}},
+													&PositionalParameter{Pos: Pos{Line: 2, Column: 61}, Value: &Scalar{Pos: Pos{Line: 2, Column: 61}, Text: "5"}},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "omitted leading and trailing subparameters",
+			src:  "//J JOB\n//S EXEC A=(,CATLG),B=(TRK,)",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 10},
+								Name: "A",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 12},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 13}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 13}}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 14}, Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "CATLG"}},
+									},
+								},
+							},
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 21},
+								Name: "B",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 23},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 24}, Value: &Scalar{Pos: Pos{Line: 2, Column: 24}, Text: "TRK"}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 28}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 28}}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "middle and fully omitted subparameters",
+			src:  "//J JOB\n//S EXEC A=(NEW,,DELETE),B=(,,)",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 10},
+								Name: "A",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 12},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 13}, Value: &Scalar{Pos: Pos{Line: 2, Column: 13}, Text: "NEW"}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 17}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 17}}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 18}, Value: &Scalar{Pos: Pos{Line: 2, Column: 18}, Text: "DELETE"}},
+									},
+								},
+							},
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 26},
+								Name: "B",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 28},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 29}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 29}}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 30}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 30}}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 31}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 31}}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {

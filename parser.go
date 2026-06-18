@@ -110,9 +110,11 @@ type Value interface {
 func (*Scalar) isValue()           {}
 func (*QuotedString) isValue()     {}
 func (*SubparameterList) isValue() {}
+func (*OmittedValue) isValue()     {}
 
 // Scalar is an unquoted value: a single alphanumeric/national run (a
-// [TokenIdentifier]). Numbers and qualified names (A.B.C) are a later story.
+// [TokenIdentifier]) or a number (a [TokenNumber]). Qualified names (A.B.C) are
+// a later story.
 type Scalar struct {
 	Pos  Pos
 	Text string
@@ -132,6 +134,15 @@ type SubparameterList struct {
 	// Pos is the position of the opening "(".
 	Pos   Pos
 	Items []Parameter
+}
+
+// OmittedValue is a null (omitted) positional subparameter: the empty slot
+// between adjacent commas in a subparameter list, e.g. the status field of
+// DISP=(,KEEP). An omitted slot is still a [PositionalParameter]; its value is
+// an OmittedValue rather than a nil Value. Pos is the delimiter ("," or ")")
+// that follows the slot.
+type OmittedValue struct {
+	Pos Pos
 }
 
 // parameterSink is anything that accumulates parameters: a statement's parameter
@@ -378,7 +389,7 @@ func parseParameter(p *parser) (Parameter, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, UnexpectedEndOfTokensError{Expected: []TokenType{TokenIdentifier, TokenString, TokenSymbol}}
+		return nil, UnexpectedEndOfTokensError{Expected: []TokenType{TokenIdentifier, TokenNumber, TokenString, TokenSymbol}}
 	}
 
 	if tok.Type == TokenIdentifier {
@@ -416,7 +427,7 @@ func parseValue(p *parser) (Value, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, UnexpectedEndOfTokensError{Expected: []TokenType{TokenIdentifier, TokenString, TokenSymbol}}
+		return nil, UnexpectedEndOfTokensError{Expected: []TokenType{TokenIdentifier, TokenNumber, TokenString, TokenSymbol}}
 	}
 
 	switch {
@@ -429,7 +440,7 @@ func parseValue(p *parser) (Value, error) {
 		}
 		return &QuotedString{Pos: str.Pos, Value: decodeQuotedString(str.Value)}, nil
 	default:
-		scalar, err := p.expect(TokenIdentifier)
+		scalar, err := p.expect(TokenIdentifier, TokenNumber)
 		if err != nil {
 			return nil, err
 		}
@@ -437,8 +448,10 @@ func parseValue(p *parser) (Value, error) {
 	}
 }
 
-// parseSubparameterList reads a parenthesized "(" parameter {"," parameter} ")"
-// list. The opening "(" is the next token.
+// parseSubparameterList reads a parenthesized subparameter list:
+// "(" [ Subparameter ] { "," [ Subparameter ] } ")". The opening "(" is the next
+// token. An empty list "()" yields zero items; an omitted slot between commas (or
+// after the last one) yields an [OmittedValue], so "(,)" yields two omitted items.
 func parseSubparameterList(p *parser) (*SubparameterList, error) {
 	open, err := p.expect(TokenSymbol)
 	if err != nil {
@@ -449,8 +462,21 @@ func parseSubparameterList(p *parser) (*SubparameterList, error) {
 	}
 
 	list := &SubparameterList{Pos: open.Pos}
+
+	// An immediate ")" is an empty list, distinct from "(,)" (two omitted slots):
+	// the empty list has no leading subparameter at all, so it never enters the
+	// element loop.
+	if tok, ok, err := p.peek(); err != nil {
+		return nil, err
+	} else if ok && isSymbol(tok, ")") {
+		if _, _, err := p.advance(); err != nil { // consume the ")"
+			return nil, err
+		}
+		return list, nil
+	}
+
 	var loopErr error
-	for action := parseSubparameter; action != nil && loopErr == nil; {
+	for action := parseSubparameterElement; action != nil && loopErr == nil; {
 		action, loopErr = action(p, list)
 	}
 	if loopErr != nil {
@@ -459,26 +485,38 @@ func parseSubparameterList(p *parser) (*SubparameterList, error) {
 	return list, nil
 }
 
-// parseSubparameter reads one item of a subparameter list, then continues on a
-// "," separator or stops on the closing ")".
-func parseSubparameter(p *parser, list *SubparameterList) (parserAction[*SubparameterList], error) {
-	param, err := parseParameter(p)
+// parseSubparameterElement reads one element of a subparameter list — a present
+// subparameter or an omitted (null) positional slot — plus its trailing separator,
+// then continues on "," or stops on ")". An omitted slot is recognized when the
+// element position holds the delimiter itself ("," or ")"); that same token then
+// serves as the separator, and the slot is recorded as a [PositionalParameter]
+// whose value is an [OmittedValue] positioned at the delimiter.
+func parseSubparameterElement(p *parser, list *SubparameterList) (parserAction[*SubparameterList], error) {
+	tok, ok, err := p.peek()
 	if err != nil {
 		return nil, err
 	}
-	list.appendParameter(param)
+	if ok && (isSymbol(tok, ",") || isSymbol(tok, ")")) {
+		list.appendParameter(&PositionalParameter{Pos: tok.Pos, Value: &OmittedValue{Pos: tok.Pos}})
+	} else {
+		param, err := parseParameter(p)
+		if err != nil {
+			return nil, err
+		}
+		list.appendParameter(param)
+	}
 
-	tok, err := p.expect(TokenSymbol)
+	sep, err := p.expect(TokenSymbol)
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case isSymbol(tok, ","):
-		return parseSubparameter, nil
-	case isSymbol(tok, ")"):
+	case isSymbol(sep, ","):
+		return parseSubparameterElement, nil
+	case isSymbol(sep, ")"):
 		return nil, nil
 	default:
-		return nil, UnexpectedSymbolError{Expected: []string{",", ")"}, Actual: tok}
+		return nil, UnexpectedSymbolError{Expected: []string{",", ")"}, Actual: sep}
 	}
 }
 
@@ -491,6 +529,8 @@ func valuePos(v Value) Pos {
 	case *QuotedString:
 		return v.Pos
 	case *SubparameterList:
+		return v.Pos
+	case *OmittedValue:
 		return v.Pos
 	default:
 		return Pos{}
