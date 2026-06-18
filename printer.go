@@ -152,7 +152,8 @@ func writeValue(pr *printer, v Value) {
 }
 
 // encodeQuotedString is the inverse of decodeQuotedString: it wraps s in
-// apostrophes and doubles each embedded apostrophe (e.g. O'NEIL -> 'O''NEIL').
+// apostrophes and doubles each embedded apostrophe, undoing the parser's
+// collapse of a doubled apostrophe to a single one on decode.
 func encodeQuotedString(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 2)
