@@ -7,9 +7,13 @@ package jcl
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -148,6 +152,43 @@ func TestPrinterRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 
 			require.Equal(t, file1, file2)
+		})
+	}
+}
+
+// TestRoundTripFromTestdata is the reusable, fixture-anchored round-trip harness:
+// each golden file under testdata/ is parsed, printed, and parsed again, and the
+// two ASTs are compared ignoring positions. The printer reformats canonically, so
+// positions legitimately shift; cmpopts.IgnoreTypes(Pos{}) drops every Pos-typed
+// field, leaving structure and text as the contract. Later fixture-based stories
+// add a row to the testCases table — they do not rebuild this harness.
+func TestRoundTripFromTestdata(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		fixture string
+	}{
+		{name: "minimal_job_jcl", fixture: "minimal_job.jcl"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := os.ReadFile(filepath.Join("testdata", tc.fixture))
+			require.NoError(t, err)
+
+			first, err := Parse(bytes.NewReader(data))
+			require.NoError(t, err)
+
+			var buf bytes.Buffer
+			require.NoError(t, Print(&buf, first))
+
+			second, err := Parse(&buf)
+			require.NoError(t, err)
+
+			require.Empty(t, cmp.Diff(first, second, cmpopts.IgnoreTypes(Pos{})))
 		})
 	}
 }
