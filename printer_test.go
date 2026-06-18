@@ -77,6 +77,24 @@ func TestPrinter(t *testing.T) {
 			},
 			expected: "//MYJOB    JOB  (ACCT),'A PROGRAMMER',CLASS=A,MSGCLASS=X\n//STEP1    EXEC PGM=IEFBR14\n",
 		},
+		{
+			// Locks the O'NEIL -> 'O''NEIL' contract: an apostrophe embedded in a
+			// quoted string is re-encoded as a doubled apostrophe.
+			name: "quoted string with embedded apostrophe",
+			input: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "MYJOB"},
+					Parameters: []Parameter{
+						&PositionalParameter{
+							Pos:   Pos{Line: 1, Column: 17},
+							Value: &QuotedString{Pos: Pos{Line: 1, Column: 17}, Value: "O'NEIL"},
+						},
+					},
+				},
+			},
+			expected: "//MYJOB    JOB  'O''NEIL'\n",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -109,6 +127,10 @@ func TestPrinterRoundTrip(t *testing.T) {
 		{
 			name: "minimal job",
 			src:  "//MYJOB    JOB  (ACCT),'A PROGRAMMER',CLASS=A,MSGCLASS=X\n//STEP1    EXEC PGM=IEFBR14",
+		},
+		{
+			name: "quoted string with embedded apostrophe",
+			src:  "//MYJOB    JOB  'O''NEIL'",
 		},
 	}
 
