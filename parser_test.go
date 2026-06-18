@@ -219,6 +219,42 @@ func TestParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "empty subparameter list versus omitted slots",
+			src:  "//J JOB\n//S EXEC A=(),B=(,)",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 10},
+								Name: "A",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 12},
+								},
+							},
+							&KeywordParameter{
+								Pos:  Pos{Line: 2, Column: 15},
+								Name: "B",
+								Value: &SubparameterList{
+									Pos: Pos{Line: 2, Column: 17},
+									Items: []Parameter{
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 18}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 18}}},
+										&PositionalParameter{Pos: Pos{Line: 2, Column: 19}, Value: &OmittedValue{Pos: Pos{Line: 2, Column: 19}}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
