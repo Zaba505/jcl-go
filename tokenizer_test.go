@@ -250,6 +250,71 @@ func TestTokenizer(t *testing.T) {
 			},
 		},
 		{
+			name: "symbolic parameter reference",
+			src:  "&LIB",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("&")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenIdentifier, Value: []byte("LIB")},
+			},
+		},
+		{
+			name: "temporary data set prefix",
+			src:  "&&TEMP",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("&&")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("TEMP")},
+			},
+		},
+		{
+			name: "symbolic parameter inside a larger value",
+			src:  "DSN=&DAY.DATA",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenIdentifier, Value: []byte("DSN")},
+				{Pos: Pos{Line: 1, Column: 4}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenSymbol, Value: []byte("&")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenIdentifier, Value: []byte("DAY")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenSymbol, Value: []byte(".")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenIdentifier, Value: []byte("DATA")},
+			},
+		},
+		{
+			name: "successive symbolic parameters",
+			src:  "&DECK&CODE",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("&")},
+				{Pos: Pos{Line: 1, Column: 2}, Type: TokenIdentifier, Value: []byte("DECK")},
+				{Pos: Pos{Line: 1, Column: 6}, Type: TokenSymbol, Value: []byte("&")},
+				{Pos: Pos{Line: 1, Column: 7}, Type: TokenIdentifier, Value: []byte("CODE")},
+			},
+		},
+		{
+			name: "temporary data set in a dd operand",
+			src:  "//WORK DD DSN=&&TEMP",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("WORK")},
+				{Pos: Pos{Line: 1, Column: 8}, Type: TokenIdentifier, Value: []byte("DD")},
+				{Pos: Pos{Line: 1, Column: 11}, Type: TokenIdentifier, Value: []byte("DSN")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 15}, Type: TokenSymbol, Value: []byte("&&")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenIdentifier, Value: []byte("TEMP")},
+			},
+		},
+		{
+			name: "lone ampersand at end of input",
+			src:  "&",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("&")},
+			},
+		},
+		{
+			name: "lone double ampersand at end of input",
+			src:  "&&",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("&&")},
+			},
+		},
+		{
 			name: "job statement",
 			src:  "//MYJOB    JOB  (ACCT),'A PROGRAMMER',CLASS=A,MSGCLASS=X",
 			expected: []Token{
