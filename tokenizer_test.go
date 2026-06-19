@@ -498,6 +498,28 @@ func TestTokenizer(t *testing.T) {
 				{Pos: Pos{Line: 1, Column: 70}, Type: TokenNumber, Value: []byte("12")},
 			},
 		},
+		{
+			// A non-blank in column 72 is optional and non-authoritative for operand
+			// continuation: without a trailing comma it must NOT merge the next "//"
+			// record into this statement. Record 1 ends in "B" (no trailing comma)
+			// with an "X" stranded in column 72; record 2 is a separate statement.
+			name: "column-72 indicator without a trailing comma does not continue the operand",
+			src:  "//A EXEC PGM=B" + strings.Repeat(" ", 57) + "X" + "\n//C EXEC PGM=D",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 1, Column: 13}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenIdentifier, Value: []byte("B")},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenIdentifier, Value: []byte("C")},
+				{Pos: Pos{Line: 2, Column: 5}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 2, Column: 10}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 2, Column: 13}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 2, Column: 14}, Type: TokenIdentifier, Value: []byte("D")},
+			},
+		},
 	}
 
 	for _, tc := range testCases {

@@ -193,12 +193,10 @@ type continuation struct {
 	phase        fieldPhase
 	parenDepth   int  // open '(' minus ')' so far in the parameter field
 	pendingComma bool // last token was an operand ',' awaiting continuation
-	col72Flagged bool // a non-blank continuation indicator was seen in column 72
 }
 
 func (c continuation) withoutSignals() continuation {
 	c.pendingComma = false
-	c.col72Flagged = false
 	return c
 }
 
@@ -326,7 +324,7 @@ func skipFieldGap(cont continuation, next func(continuation) tokenizerAction) to
 			case r == '\r':
 				t.pos = pos // zero-width: keep column accounting honest for CRLF
 			case r == '\n':
-				if cont.pendingComma || cont.col72Flagged {
+				if cont.pendingComma {
 					return consumeContinuationFraming(cont, next)
 				}
 				return enterGap(continuation{phase: phaseExpectNameOrOp})
@@ -337,7 +335,10 @@ func skipFieldGap(cont continuation, next func(continuation) tokenizerAction) to
 			case pos.Column >= sequenceColumn:
 				// ignored sequence text; discard to the end of the record
 			case pos.Column == continuationColumn:
-				cont.col72Flagged = true // non-blank continuation indicator
+				// A non-blank in column 72 is optional and non-authoritative for
+				// operand continuation (the trailing comma is what signals it, per
+				// SPEC.md), so it is ignored here. Comment continuation, where the
+				// column-72 indicator is required, is handled in tokenizeCommentsField.
 			default:
 				if skippedBlank && cont.phase == phaseParamsOperand &&
 					cont.parenDepth == 0 && !cont.pendingComma {
