@@ -20,13 +20,18 @@ import (
 // cataloged procedures and INCLUDE groups (a body with no leading JOB) are
 // parsed by a separate entry point in a later story and are not modeled here.
 type Job struct {
-	// Statement is the JOB statement that opens the job. It is nil only for the
-	// empty-input parse.
+	// Preamble holds the comment, null, and delimiter statements that appear
+	// before the JOB statement, in source order.
+	Preamble []Statement
+
+	// Statement is the JOB statement that opens the job. It is nil for the
+	// empty-input parse, or for input that holds only preamble statements.
 	Statement *JobStatement
 
-	// Body holds the statements that make up the job's steps, in source order.
-	// This slice currently holds EXEC statements; later stories add DD, IF, and
-	// the rest of the body statements.
+	// Body holds the statements that make up the job's steps, in source order:
+	// EXEC statements (each carrying its DDs) and the comment, null, and
+	// delimiter statements interleaved among them. Later stories add IF and the
+	// rest of the body statements.
 	Body []Statement
 }
 
@@ -36,9 +41,12 @@ type Statement interface {
 	isStatement()
 }
 
-func (*JobStatement) isStatement()    {}
-func (*ExecStatement) isStatement()   {}
-func (*DDConcatenation) isStatement() {}
+func (*JobStatement) isStatement()       {}
+func (*ExecStatement) isStatement()      {}
+func (*DDConcatenation) isStatement()    {}
+func (*CommentStatement) isStatement()   {}
+func (*NullStatement) isStatement()      {}
+func (*DelimiterStatement) isStatement() {}
 
 // Name is a name-field label (a jobname or stepname). A keyword or subparameter
 // list uses its own representation; only the statement name field is a Name.
@@ -115,6 +123,32 @@ type DDStatement struct {
 	// Parameters holds the DD operands in source order (DSN, DISP, SPACE, UNIT,
 	// VOL, DCB, SYSOUT, DUMMY, …).
 	Parameters []Parameter
+}
+
+// CommentStatement is a "//*" comment statement record: a whole record of
+// free-text commentary. Text is the full record text including the leading
+// "//*" — a comment statement is non-semantic and carries nothing to decode, so
+// it is recorded verbatim only so the printer can round-trip it.
+type CommentStatement struct {
+	// Pos is the position of the leading "//*".
+	Pos  Pos
+	Text string
+}
+
+// NullStatement is a "//" null statement record: a bare "//" in columns 1–2 with
+// no operation field. It is non-semantic and commonly marks the end of a job.
+type NullStatement struct {
+	// Pos is the position of the leading "//".
+	Pos Pos
+}
+
+// DelimiterStatement is a "/*" delimiter statement record. It is non-semantic;
+// in context it terminates in-stream data. The optional trailing comment
+// ("/*" [ Blank Comments ]) arrives with in-stream data in a later story — only a
+// bare "/*" record is parsed here.
+type DelimiterStatement struct {
+	// Pos is the position of the leading "/*".
+	Pos Pos
 }
 
 // Parameter is implemented by the concrete parameter-field entries: a
@@ -222,7 +256,7 @@ func Parse(r io.Reader) (*Job, error) {
 	job := &Job{}
 
 	var err error
-	for action := parseJob; action != nil && err == nil; {
+	for action := parsePreamble; action != nil && err == nil; {
 		action, err = action(p, job)
 	}
 	if err != nil {
@@ -297,20 +331,12 @@ func isSymbol(tok Token, s string) bool {
 // next action so the loop stays monotone.
 type parserAction[T any] func(p *parser, t T) (parserAction[T], error)
 
-// statementHeader reads the shared statement skeleton "//" [Name] Operation. The
-// name field begins in column 3 (immediately after the "//"); when it is omitted
-// column 3 is blank, so the operation lands in a later column. The first
-// identifier at column 3 is therefore the name; otherwise it is the operation and
-// there is no name.
-func (p *parser) statementHeader() (name *Name, op Token, err error) {
-	id, err := p.expect(TokenSymbol)
-	if err != nil {
-		return nil, Token{}, err
-	}
-	if !isSymbol(id, "//") {
-		return nil, Token{}, UnexpectedSymbolError{Expected: []string{"//"}, Actual: id}
-	}
-
+// operationField reads "[Name] Operation" — the statement skeleton after the
+// leading "//" has been consumed. The name field begins in column 3 (immediately
+// after the "//"); when it is omitted column 3 is blank, so the operation lands in
+// a later column. The first identifier at column 3 is therefore the name;
+// otherwise it is the operation and there is no name.
+func (p *parser) operationField() (name *Name, op Token, err error) {
 	op, err = p.expect(TokenIdentifier)
 	if err != nil {
 		return nil, Token{}, err
@@ -325,34 +351,89 @@ func (p *parser) statementHeader() (name *Name, op Token, err error) {
 	return name, op, nil
 }
 
-// parseJob is the top-level action. Empty input parses to the zero-value &Job{}.
-// Otherwise the first statement must be a JOB statement; its body statements are
-// parsed by parseBody.
-func parseJob(p *parser, job *Job) (parserAction[*Job], error) {
-	if _, ok, err := p.peek(); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, nil
+// afterDoubleSlash consumes a leading "//" (at startPos, already peeked by the
+// caller) and decides whether the record is a null statement. A null statement is
+// a "//" with no operation field: the "//" is not followed by an operation
+// identifier — the next token instead starts a new record ("//", "/*", "//*") or
+// ends the stream. (In valid JCL every statement record begins with one of those,
+// so the only token that can follow a leading "//" within the same record is an
+// identifier.) When it is not null, it reads the operation field for the caller to
+// dispatch. Exactly one of null / (name, op) is meaningful: null is non-nil for a
+// null statement; otherwise op holds the operation.
+func (p *parser) afterDoubleSlash(startPos Pos) (null *NullStatement, name *Name, op Token, err error) {
+	if _, _, err = p.advance(); err != nil { // consume the "//"
+		return nil, nil, Token{}, err
 	}
+	next, ok, err := p.peek()
+	if err != nil {
+		return nil, nil, Token{}, err
+	}
+	if !ok || next.Type != TokenIdentifier {
+		return &NullStatement{Pos: startPos}, nil, Token{}, nil
+	}
+	name, op, err = p.operationField()
+	return nil, name, op, err
+}
 
-	startPos := mustPeekPos(p)
-	name, op, err := p.statementHeader()
+// trivialStatement returns the comment or delimiter statement node that tok
+// begins, or nil when tok is neither. The "//" null statement is handled
+// separately by afterDoubleSlash, which must consume the "//" to tell a null
+// statement from a normal "//" name operation header.
+func trivialStatement(tok Token) Statement {
+	switch {
+	case tok.Type == TokenComment:
+		return &CommentStatement{Pos: tok.Pos, Text: string(tok.Value)}
+	case isSymbol(tok, "/*"):
+		return &DelimiterStatement{Pos: tok.Pos}
+	}
+	return nil
+}
+
+// parsePreamble is the top-level action. It collects the comment, null, and
+// delimiter statements that precede the JOB statement into job.Preamble, then
+// requires the JOB statement and hands off to parseBody. Empty input — and input
+// that holds only preamble statements — parses with a nil Statement.
+func parsePreamble(p *parser, job *Job) (parserAction[*Job], error) {
+	tok, ok, err := p.peek()
 	if err != nil {
 		return nil, err
 	}
-	if string(op.Value) != "JOB" {
-		return nil, UnexpectedOperationError{Pos: op.Pos, Operation: string(op.Value)}
-	}
-	if name == nil {
-		return nil, MissingNameError{Pos: op.Pos, Operation: "JOB"}
+	if !ok {
+		return nil, nil
 	}
 
-	stmt := &JobStatement{Pos: startPos, Name: name}
-	if err := parseParameters(p, stmt); err != nil {
-		return nil, err
+	if s := trivialStatement(tok); s != nil {
+		if _, _, err := p.advance(); err != nil {
+			return nil, err
+		}
+		job.Preamble = append(job.Preamble, s)
+		return parsePreamble, nil
 	}
-	job.Statement = stmt
-	return parseBody, nil
+	if isSymbol(tok, "//") {
+		startPos := tok.Pos
+		null, name, op, err := p.afterDoubleSlash(startPos)
+		if err != nil {
+			return nil, err
+		}
+		if null != nil {
+			job.Preamble = append(job.Preamble, null)
+			return parsePreamble, nil
+		}
+		// The first real statement must be a JOB statement.
+		if string(op.Value) != "JOB" {
+			return nil, UnexpectedOperationError{Pos: op.Pos, Operation: string(op.Value)}
+		}
+		if name == nil {
+			return nil, MissingNameError{Pos: op.Pos, Operation: "JOB"}
+		}
+		stmt := &JobStatement{Pos: startPos, Name: name}
+		if err := parseParameters(p, stmt); err != nil {
+			return nil, err
+		}
+		job.Statement = stmt
+		return parseBody, nil
+	}
+	return nil, UnexpectedTokenError{Expected: []TokenType{TokenSymbol, TokenComment}, Actual: tok}
 }
 
 // parseBody parses the statements that make up the job's steps. It threads the
@@ -362,45 +443,62 @@ func parseBody(p *parser, job *Job) (parserAction[*Job], error) {
 	return parseBodyStatement(nil)(p, job)
 }
 
-// parseBodyStatement parses one body statement, dispatched on its operation
-// field, then continues with the next. An EXEC starts a new step and becomes the
-// current step for the DDs that follow it; a DD attaches to step, which the
+// parseBodyStatement parses one body statement, then continues with the next. A
+// comment, null, or delimiter statement is non-semantic and is appended to the
+// body without changing the current step. An EXEC starts a new step and becomes
+// the current step for the DDs that follow it; a DD attaches to step, which the
 // returned action keeps current. The loop ends when the token stream is
 // exhausted.
 func parseBodyStatement(step *ExecStatement) parserAction[*Job] {
 	return func(p *parser, job *Job) (parserAction[*Job], error) {
-		if _, ok, err := p.peek(); err != nil {
-			return nil, err
-		} else if !ok {
-			return nil, nil
-		}
-
-		startPos := mustPeekPos(p)
-		name, op, err := p.statementHeader()
+		tok, ok, err := p.peek()
 		if err != nil {
 			return nil, err
 		}
-		switch string(op.Value) {
-		case "EXEC":
-			stmt := &ExecStatement{Pos: startPos, Name: name}
-			if err := parseParameters(p, stmt); err != nil {
-				return nil, err
-			}
-			job.Body = append(job.Body, stmt)
-			return parseBodyStatement(stmt), nil
-		case "DD":
-			if step == nil {
-				return nil, MisplacedDDError{Pos: op.Pos}
-			}
-			dd := &DDStatement{Pos: startPos}
-			if err := parseParameters(p, dd); err != nil {
-				return nil, err
-			}
-			attachDD(step, name, startPos, dd)
-			return parseBodyStatement(step), nil
-		default:
-			return nil, UnexpectedOperationError{Pos: op.Pos, Operation: string(op.Value)}
+		if !ok {
+			return nil, nil
 		}
+
+		if s := trivialStatement(tok); s != nil {
+			if _, _, err := p.advance(); err != nil {
+				return nil, err
+			}
+			job.Body = append(job.Body, s)
+			return parseBodyStatement(step), nil
+		}
+		if isSymbol(tok, "//") {
+			startPos := tok.Pos
+			null, name, op, err := p.afterDoubleSlash(startPos)
+			if err != nil {
+				return nil, err
+			}
+			if null != nil {
+				job.Body = append(job.Body, null)
+				return parseBodyStatement(step), nil
+			}
+			switch string(op.Value) {
+			case "EXEC":
+				stmt := &ExecStatement{Pos: startPos, Name: name}
+				if err := parseParameters(p, stmt); err != nil {
+					return nil, err
+				}
+				job.Body = append(job.Body, stmt)
+				return parseBodyStatement(stmt), nil
+			case "DD":
+				if step == nil {
+					return nil, MisplacedDDError{Pos: op.Pos}
+				}
+				dd := &DDStatement{Pos: startPos}
+				if err := parseParameters(p, dd); err != nil {
+					return nil, err
+				}
+				attachDD(step, name, startPos, dd)
+				return parseBodyStatement(step), nil
+			default:
+				return nil, UnexpectedOperationError{Pos: op.Pos, Operation: string(op.Value)}
+			}
+		}
+		return nil, UnexpectedTokenError{Expected: []TokenType{TokenSymbol, TokenComment}, Actual: tok}
 	}
 }
 
@@ -417,16 +515,18 @@ func attachDD(step *ExecStatement, name *Name, pos Pos, dd *DDStatement) {
 	step.DDs = append(step.DDs, &DDConcatenation{Pos: pos, Name: name, DDs: []*DDStatement{dd}})
 }
 
-// mustPeekPos returns the position of the next (already-peeked, available) token.
-// Callers must have confirmed a token is available via peek.
-func mustPeekPos(p *parser) Pos {
-	tok, _, _ := p.peek()
-	return tok.Pos
+// endsParameterField reports whether tok (with availability ok) marks the end of
+// a statement's parameter field: the start of the next statement record — "//", a
+// "/*" delimiter, or a "//*" comment — or the end of the stream. None of these is
+// consumed by the parameter loop.
+func endsParameterField(tok Token, ok bool) bool {
+	return !ok || isSymbol(tok, "//") || isSymbol(tok, "/*") || tok.Type == TokenComment
 }
 
 // parseParameters fills the parameter field of a statement (sink) by running the
 // parameter-field action loop. The field is delimited by the start of the next
-// statement ("//") or the end of the stream, neither of which it consumes.
+// statement ("//", "/*", or a "//*" comment) or the end of the stream, neither of
+// which it consumes.
 func parseParameters(p *parser, sink parameterSink) error {
 	var err error
 	for action := parseParameterField; action != nil && err == nil; {
@@ -445,7 +545,7 @@ func parseParameterField(p *parser, sink parameterSink) (parserAction[parameterS
 	}
 	// No operands: a statement may have an empty parameter field, or this is the
 	// start of the next statement.
-	if !ok || isSymbol(tok, "//") {
+	if endsParameterField(tok, ok) {
 		return nil, nil
 	}
 

@@ -66,10 +66,30 @@ const (
 	operandColumn = 17
 )
 
-// printJob is the entry action. It writes the JOB statement, then hands off to
-// the body walker. The empty (zero-value) *Job has no JOB statement and prints
-// nothing, so it ends immediately.
+// printJob is the entry action. It walks the preamble, then the JOB statement,
+// then the body. The empty (zero-value) *Job has no preamble and no JOB
+// statement, so it prints nothing.
 func printJob(pr *printer, j *Job) printerAction {
+	return printPreambleAt(0)
+}
+
+// printPreambleAt returns an action that prints the preamble statement at index
+// i, then advances to i+1; once the preamble is exhausted it hands off to the JOB
+// statement. Same closure-over-index pattern as printBodyAt.
+func printPreambleAt(i int) printerAction {
+	return func(pr *printer, j *Job) printerAction {
+		if i >= len(j.Preamble) {
+			return printJobStatement
+		}
+		writeTrivial(pr, j.Preamble[i])
+		return printPreambleAt(i + 1)
+	}
+}
+
+// printJobStatement writes the JOB statement, then hands off to the body walker.
+// A nil Statement — the empty-input parse or an input of only preamble statements
+// — ends printing.
+func printJobStatement(pr *printer, j *Job) printerAction {
 	if j.Statement == nil {
 		return nil
 	}
@@ -86,12 +106,30 @@ func printBodyAt(i int) printerAction {
 		if i >= len(j.Body) {
 			return nil
 		}
-		if s, ok := j.Body[i].(*ExecStatement); ok {
+		switch s := j.Body[i].(type) {
+		case *ExecStatement:
 			writeStatement(pr, s.Name, "EXEC", s.Parameters)
 			writeStepDDs(pr, s)
+		case *CommentStatement, *NullStatement, *DelimiterStatement:
+			writeTrivial(pr, s)
 		}
 		return printBodyAt(i + 1)
 	}
+}
+
+// writeTrivial writes a non-semantic statement record — a comment, null, or
+// delimiter — followed by a newline. A comment statement's text is the full
+// record (it includes the leading "//*"), so it is written verbatim.
+func writeTrivial(pr *printer, s Statement) {
+	switch s := s.(type) {
+	case *CommentStatement:
+		pr.write(s.Text)
+	case *NullStatement:
+		pr.write("//")
+	case *DelimiterStatement:
+		pr.write("/*")
+	}
+	pr.write("\n")
 }
 
 // writeStepDDs writes the DD statements of a step: each concatenation's named
