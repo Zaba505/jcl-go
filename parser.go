@@ -76,8 +76,10 @@ type ExecStatement struct {
 	Parameters []Parameter
 
 	// DDs holds the data definitions of this step, in source order, one entry
-	// per ddname. Concatenated DDs (a named DD followed by unnamed DDs) are
-	// grouped into a single DDConcatenation.
+	// per concatenation group: a named DD and the unnamed DDs that immediately
+	// follow it are grouped into a single DDConcatenation. Grouping is purely
+	// positional, so a ddname that is coded again later (invalid JCL) opens a
+	// second entry rather than merging with the earlier one.
 	DDs []*DDConcatenation
 }
 
