@@ -109,9 +109,23 @@ func printBodyAt(i int) printerAction {
 		switch s := j.Body[i].(type) {
 		case *ExecStatement:
 			writeStatement(pr, s.Name, "EXEC", s.Parameters)
-			writeStepDDs(pr, s)
+			// A step's DDs are nested on the ExecStatement, but trivial records
+			// (comment/null/delimiter) coded among them live in Job.Body. Gather the
+			// trivial records up to the next step and print them interleaved with the
+			// DDs in source order, so a comment coded between an EXEC and its DD is
+			// not hoisted past the DD.
+			k := i + 1
+			for k < len(j.Body) {
+				if _, isExec := j.Body[k].(*ExecStatement); isExec {
+					break
+				}
+				k++
+			}
+			writeStepRecords(pr, s, j.Body[i+1:k])
+			return printBodyAt(k)
 		case *CommentStatement, *NullStatement, *DelimiterStatement:
 			writeTrivial(pr, s)
+			return printBodyAt(i + 1)
 		}
 		return printBodyAt(i + 1)
 	}
@@ -132,20 +146,87 @@ func writeTrivial(pr *printer, s Statement) {
 	pr.write("\n")
 }
 
-// writeStepDDs writes the DD statements of a step: each concatenation's named
-// head followed by its unnamed continuations. The ddname lives on the
-// concatenation, so only the first member of each group carries a name; the rest
-// are written with a blank name field.
-func writeStepDDs(pr *printer, s *ExecStatement) {
+// writeStepRecords writes a step's DD statements interleaved with the trivial
+// records (comment/null/delimiter) that follow the EXEC in the body, restoring
+// source order. The DDs are nested on the ExecStatement while the trivial records
+// live in Job.Body, so without this merge a comment coded between the EXEC and a DD
+// would be hoisted past the DD. Records are merged by source position; a DD sorts
+// before a trivial record at the same position, so a zero-position (hand-built) AST
+// still prints its DDs immediately after the EXEC.
+func writeStepRecords(pr *printer, s *ExecStatement, trivials []Statement) {
+	dds := flattenDDs(s)
+	di, ti := 0, 0
+	for di < len(dds) && ti < len(trivials) {
+		if posLess(statementPos(trivials[ti]), dds[di].dd.Pos) {
+			writeTrivial(pr, trivials[ti])
+			ti++
+			continue
+		}
+		writeDD(pr, dds[di])
+		di++
+	}
+	for ; di < len(dds); di++ {
+		writeDD(pr, dds[di])
+	}
+	for ; ti < len(trivials); ti++ {
+		writeTrivial(pr, trivials[ti])
+	}
+}
+
+// ddRecord is one physical DD record paired with the name it prints under: the
+// concatenation's ddname for a group's first member, nil for its continuations.
+type ddRecord struct {
+	name *Name
+	dd   *DDStatement
+}
+
+// flattenDDs flattens a step's concatenation groups into the physical DD records
+// in source order: each group's first member carries the ddname, the rest a blank
+// name field.
+func flattenDDs(s *ExecStatement) []ddRecord {
+	var out []ddRecord
 	for _, c := range s.DDs {
 		for i, dd := range c.DDs {
 			var name *Name
 			if i == 0 {
 				name = c.Name
 			}
-			writeStatement(pr, name, "DD", dd.Parameters)
+			out = append(out, ddRecord{name: name, dd: dd})
 		}
 	}
+	return out
+}
+
+// writeDD writes a single DD record under its (possibly blank) name field.
+func writeDD(pr *printer, r ddRecord) {
+	writeStatement(pr, r.name, "DD", r.dd.Parameters)
+}
+
+// statementPos returns the source position of a body statement, used to merge
+// nested DDs with the body's trivial records in source order.
+func statementPos(s Statement) Pos {
+	switch s := s.(type) {
+	case *ExecStatement:
+		return s.Pos
+	case *DDConcatenation:
+		return s.Pos
+	case *CommentStatement:
+		return s.Pos
+	case *NullStatement:
+		return s.Pos
+	case *DelimiterStatement:
+		return s.Pos
+	default:
+		return Pos{}
+	}
+}
+
+// posLess reports whether a precedes b in source order (by line, then column).
+func posLess(a, b Pos) bool {
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Column < b.Column
 }
 
 // writeStatement writes one statement record: "//" name op operands, terminated

@@ -196,6 +196,59 @@ func TestPrinter(t *testing.T) {
 				"//\n" +
 				"/*\n",
 		},
+		{
+			// A comment coded between an EXEC and its DD must stay between them on
+			// print. The DD is nested on the ExecStatement while the comment lives in
+			// Job.Body, so the printer merges them by source position rather than
+			// dumping every DD immediately after the EXEC. (The round-trip tests
+			// ignore Pos and cannot see this reordering, so it is pinned here.)
+			name: "trivial records interleaved with a step's DDs keep source order",
+			input: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Pos:  Pos{Line: 4, Column: 1},
+								Name: &Name{Pos: Pos{Line: 4, Column: 3}, Text: "D"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 4, Column: 1},
+										Parameters: []Parameter{
+											&PositionalParameter{
+												Pos:   Pos{Line: 4, Column: 8},
+												Value: &Scalar{Pos: Pos{Line: 4, Column: 8}, Text: "DUMMY"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					&CommentStatement{Pos: Pos{Line: 3, Column: 1}, Text: "//* STEP COMMENT"},
+					&NullStatement{Pos: Pos{Line: 5, Column: 1}},
+					&DelimiterStatement{Pos: Pos{Line: 6, Column: 1}},
+				},
+			},
+			expected: "//J        JOB  \n" +
+				"//S        EXEC PGM=P\n" +
+				"//* STEP COMMENT\n" +
+				"//D        DD   DUMMY\n" +
+				"//\n" +
+				"/*\n",
+		},
 	}
 
 	for _, tc := range testCases {
