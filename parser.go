@@ -6,6 +6,7 @@
 package jcl
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"iter"
@@ -325,6 +326,27 @@ func isSymbol(tok Token, s string) bool {
 	return tok.Type == TokenSymbol && string(tok.Value) == s
 }
 
+// commentStatementPrefix is the leading text the tokenizer keeps on a whole-record
+// "//*" comment statement token. The tokenizer emits [TokenComment] for two
+// distinct things: a whole-record "//*" comment statement (whose value retains the
+// "//*" framing) and a trailing comments field after a statement's operands (whose
+// value is only the free text). The prefix is the parser's way to tell them apart.
+var commentStatementPrefix = []byte("//*")
+
+// isCommentStatement reports whether tok is a whole-record "//*" comment statement
+// token, as opposed to a trailing comments-field token. Both are [TokenComment];
+// only the comment statement keeps the "//*" framing in its value.
+func isCommentStatement(tok Token) bool {
+	return tok.Type == TokenComment && bytes.HasPrefix(tok.Value, commentStatementPrefix)
+}
+
+// isCommentsField reports whether tok is a trailing comments-field token: a
+// [TokenComment] that follows a statement's operands rather than standing as its
+// own "//*" comment statement record.
+func isCommentsField(tok Token) bool {
+	return tok.Type == TokenComment && !bytes.HasPrefix(tok.Value, commentStatementPrefix)
+}
+
 // parserAction is one step of the parser state machine, generic over the AST
 // node being built. Returning (nil, nil) completes successfully; returning
 // (nil, err) terminates with an error — every error path returns nil for the
@@ -381,7 +403,7 @@ func (p *parser) afterDoubleSlash(startPos Pos) (null *NullStatement, name *Name
 // statement from a normal "//" name operation header.
 func trivialStatement(tok Token) Statement {
 	switch {
-	case tok.Type == TokenComment:
+	case isCommentStatement(tok):
 		return &CommentStatement{Pos: tok.Pos, Text: string(tok.Value)}
 	case isSymbol(tok, "/*"):
 		return &DelimiterStatement{Pos: tok.Pos}
@@ -517,22 +539,39 @@ func attachDD(step *ExecStatement, name *Name, pos Pos, dd *DDStatement) {
 
 // endsParameterField reports whether tok (with availability ok) marks the end of
 // a statement's parameter field: the start of the next statement record — "//", a
-// "/*" delimiter, or a "//*" comment — or the end of the stream. None of these is
-// consumed by the parameter loop.
+// "/*" delimiter, or a "//*" comment statement — a trailing comments field on the
+// same record, or the end of the stream. The parameter loop consumes none of
+// these; a trailing comments field is consumed afterward by [parseParameters].
 func endsParameterField(tok Token, ok bool) bool {
 	return !ok || isSymbol(tok, "//") || isSymbol(tok, "/*") || tok.Type == TokenComment
 }
 
 // parseParameters fills the parameter field of a statement (sink) by running the
-// parameter-field action loop. The field is delimited by the start of the next
-// statement ("//", "/*", or a "//*" comment) or the end of the stream, neither of
-// which it consumes.
+// parameter-field action loop, then consumes any trailing comments field. The
+// field is delimited by the start of the next statement ("//", "/*", or a "//*"
+// comment statement), by a trailing comments field, or by the end of the stream.
 func parseParameters(p *parser, sink parameterSink) error {
 	var err error
 	for action := parseParameterField; action != nil && err == nil; {
 		action, err = action(p, sink)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// A trailing comments field follows the operands within the same record (e.g.
+	// "//S EXEC PGM=P  RUN THE STEP"). It is non-semantic and not modeled in the
+	// AST, so it is consumed here. Leaving it would let the body loop misread it as
+	// a standalone "//*" comment statement, since both are emitted as TokenComment.
+	tok, ok, err := p.peek()
+	if err != nil {
+		return err
+	}
+	if ok && isCommentsField(tok) {
+		if _, _, err := p.advance(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseParameterField reads one parameter into sink, then continues with the next

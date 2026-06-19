@@ -492,6 +492,42 @@ func TestParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			// A trailing comments field follows the operands within the same
+			// record and is emitted as TokenComment, just as a "//*" comment
+			// statement is — but it is non-semantic and not modeled in the AST. It
+			// must be consumed, not parsed into a standalone CommentStatement: here
+			// both the JOB card and the EXEC carry one, and neither survives into
+			// the parsed Job.
+			name: "trailing comments fields are consumed, not parsed as comment statements",
+			src:  "//J JOB CLASS=A THE JOB CARD\n//S EXEC PGM=P RUN IT",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+					Parameters: []Parameter{
+						&KeywordParameter{
+							Pos:   Pos{Line: 1, Column: 9},
+							Name:  "CLASS",
+							Value: &Scalar{Pos: Pos{Line: 1, Column: 15}, Text: "A"},
+						},
+					},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
