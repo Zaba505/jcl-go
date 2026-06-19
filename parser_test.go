@@ -255,6 +255,138 @@ func TestParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			// A step with a named-DD concatenation (SYSLIB head + an unnamed
+			// continuation), a DUMMY positional, a SYSOUT keyword, and a
+			// qualified DSN (X.Y, a QualifiedName). Positions are computed from
+			// the source columns; the ddname sits in column 3 and the unnamed
+			// continuation's DD does not.
+			name: "dd statements attached to step with concatenation",
+			src:  "//J JOB\n//S EXEC PGM=P\n//A DD DSN=X.Y,DISP=SHR\n// DD DUMMY\n//B DD SYSOUT=A",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Pos:  Pos{Line: 3, Column: 1},
+								Name: &Name{Pos: Pos{Line: 3, Column: 3}, Text: "A"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 3, Column: 1},
+										Parameters: []Parameter{
+											&KeywordParameter{
+												Pos:  Pos{Line: 3, Column: 8},
+												Name: "DSN",
+												Value: &QualifiedName{
+													Pos: Pos{Line: 3, Column: 12},
+													Segments: []Scalar{
+														{Pos: Pos{Line: 3, Column: 12}, Text: "X"},
+														{Pos: Pos{Line: 3, Column: 14}, Text: "Y"},
+													},
+												},
+											},
+											&KeywordParameter{
+												Pos:   Pos{Line: 3, Column: 16},
+												Name:  "DISP",
+												Value: &Scalar{Pos: Pos{Line: 3, Column: 21}, Text: "SHR"},
+											},
+										},
+									},
+									{
+										Pos: Pos{Line: 4, Column: 1},
+										Parameters: []Parameter{
+											&PositionalParameter{
+												Pos:   Pos{Line: 4, Column: 7},
+												Value: &Scalar{Pos: Pos{Line: 4, Column: 7}, Text: "DUMMY"},
+											},
+										},
+									},
+								},
+							},
+							{
+								Pos:  Pos{Line: 5, Column: 1},
+								Name: &Name{Pos: Pos{Line: 5, Column: 3}, Text: "B"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 5, Column: 1},
+										Parameters: []Parameter{
+											&KeywordParameter{
+												Pos:   Pos{Line: 5, Column: 8},
+												Name:  "SYSOUT",
+												Value: &Scalar{Pos: Pos{Line: 5, Column: 15}, Text: "A"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			// A positional period-qualified name (A.B): parseParameter's
+			// identifier fast-path must delegate to qualified-name parsing the
+			// same way parseValue does, rather than stopping at the first
+			// segment and leaving the "." in the stream.
+			name: "positional qualified name",
+			src:  "//J JOB\n//S EXEC PGM=P\n//D DD A.B",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Pos:  Pos{Line: 3, Column: 1},
+								Name: &Name{Pos: Pos{Line: 3, Column: 3}, Text: "D"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 3, Column: 1},
+										Parameters: []Parameter{
+											&PositionalParameter{
+												Pos: Pos{Line: 3, Column: 8},
+												Value: &QualifiedName{
+													Pos: Pos{Line: 3, Column: 8},
+													Segments: []Scalar{
+														{Pos: Pos{Line: 3, Column: 8}, Text: "A"},
+														{Pos: Pos{Line: 3, Column: 10}, Text: "B"},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -297,13 +429,22 @@ func TestParserErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "unsupported body operation",
+			name: "dd statement before any step",
 			src:  "//MYJOB    JOB  (ACCT)\n//SYSIN    DD   DUMMY",
+			assert: func(t *testing.T, err error) {
+				var target MisplacedDDError
+				require.ErrorAs(t, err, &target)
+				require.Equal(t, Pos{Line: 2, Column: 12}, target.Pos)
+			},
+		},
+		{
+			name: "unsupported body operation",
+			src:  "//MYJOB    JOB  (ACCT)\n//STEP1    EXEC PGM=IEFBR14\n//OUT      OUTPUT CLASS=A",
 			assert: func(t *testing.T, err error) {
 				var target UnexpectedOperationError
 				require.ErrorAs(t, err, &target)
-				require.Equal(t, "DD", target.Operation)
-				require.Equal(t, Pos{Line: 2, Column: 12}, target.Pos)
+				require.Equal(t, "OUTPUT", target.Operation)
+				require.Equal(t, Pos{Line: 3, Column: 12}, target.Pos)
 			},
 		},
 	}
