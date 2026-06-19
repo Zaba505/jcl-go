@@ -89,6 +89,19 @@ func TestTokenizer(t *testing.T) {
 			},
 		},
 		{
+			// The CR of a CRLF line ending is zero-width and excluded from the
+			// comment value, so a "//*" comment tokenizes identically to its LF
+			// form — no trailing '\r' leaks into the token.
+			name: "comment statement with CRLF line ending",
+			src:  "//* A COMMENT\r\n//MYJOB JOB",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenComment, Value: []byte("//* A COMMENT")},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenIdentifier, Value: []byte("MYJOB")},
+				{Pos: Pos{Line: 2, Column: 9}, Type: TokenIdentifier, Value: []byte("JOB")},
+			},
+		},
+		{
 			name: "name",
 			src:  "MYJOB",
 			expected: []Token{

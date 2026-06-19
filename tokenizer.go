@@ -475,10 +475,11 @@ func tokenizeAfterDoubleSlash(start Pos) tokenizerAction {
 // tokenizeComment scans a "//*" comment statement, the "//*" already consumed at
 // start, and emits the whole record — from "//*" through the text before the
 // record boundary — as one [TokenComment]. The comment carries no syntactic
-// content, so its runes are accumulated verbatim rather than tokenized. The
-// terminating newline is backed up so the gap skipper consumes it; end of input
-// ends the comment. (The comment statement may run to column 80, the one
-// exception to the column-71 rule, and cannot be continued.)
+// content, so its runes are accumulated verbatim rather than tokenized. A '\r'
+// is zero-width and excluded from the value so CRLF and LF inputs yield the same
+// token; the terminating newline is backed up so the gap skipper consumes it;
+// end of input ends the comment. (The comment statement may run to column 80,
+// the one exception to the column-71 rule, and cannot be continued.)
 func tokenizeComment(start Pos) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		value := []byte("//*")
@@ -488,6 +489,10 @@ func tokenizeComment(start Pos) tokenizerAction {
 			if err != nil {
 				tok := Token{Pos: start, Type: TokenComment, Value: value}
 				return yieldTokenThen(tok, yieldErrorOr(err, nil))
+			}
+			if r == '\r' {
+				t.pos = pos // zero-width: keep CR out of the value (CRLF == LF)
+				continue
 			}
 			if r == '\n' {
 				tok := Token{Pos: start, Type: TokenComment, Value: value}
@@ -527,8 +532,9 @@ func tokenizeName(start Pos, first rune, cont continuation) tokenizerAction {
 // first already consumed at start, and emits a [TokenNumber]. JCL numbers are
 // plain unsigned decimal integers (return codes, space quantities, generation
 // numbers); signed forms combine a sign [TokenSymbol] with a Number and are
-// deferred. A non-digit rune is backed up so the next action re-reads it; end of
-// input ends the run.
+// deferred. A non-digit rune, or a rune past the last significant column (71),
+// ends the run and is backed up so the next action re-reads it; end of input
+// ends the run.
 //
 // A value that begins with a digit but continues with letters (e.g. a device
 // address such as 0A80) splits into a Number followed by an Identifier; this
