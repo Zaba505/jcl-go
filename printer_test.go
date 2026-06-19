@@ -156,6 +156,99 @@ func TestPrinter(t *testing.T) {
 				"//         DD   DSN=MY.LIB.B,DISP=SHR\n" +
 				"//SYSPRINT DD   SYSOUT=A\n",
 		},
+		{
+			// Pins the non-semantic records: a preamble comment is written
+			// verbatim (it carries its own "//*"), and a body comment, null
+			// statement, and delimiter statement each print as their own record.
+			name: "preamble and body trivial statements",
+			input: &Job{
+				Preamble: []Statement{
+					&CommentStatement{Text: "//* JOB HEADER COMMENT"},
+				},
+				Statement: &JobStatement{
+					Name: &Name{Text: "MYJOB"},
+					Parameters: []Parameter{
+						&PositionalParameter{
+							Value: &SubparameterList{
+								Items: []Parameter{
+									&PositionalParameter{Value: &Scalar{Text: "ACCT"}},
+								},
+							},
+						},
+					},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Name: &Name{Text: "STEP1"},
+						Parameters: []Parameter{
+							&KeywordParameter{Name: "PGM", Value: &Scalar{Text: "IEFBR14"}},
+						},
+					},
+					&CommentStatement{Text: "//* STEP COMMENT"},
+					&NullStatement{},
+					&DelimiterStatement{},
+				},
+			},
+			expected: "//* JOB HEADER COMMENT\n" +
+				"//MYJOB    JOB  (ACCT)\n" +
+				"//STEP1    EXEC PGM=IEFBR14\n" +
+				"//* STEP COMMENT\n" +
+				"//\n" +
+				"/*\n",
+		},
+		{
+			// A comment coded between an EXEC and its DD must stay between them on
+			// print. The DD is nested on the ExecStatement while the comment lives in
+			// Job.Body, so the printer merges them by source position rather than
+			// dumping every DD immediately after the EXEC. (The round-trip tests
+			// ignore Pos and cannot see this reordering, so it is pinned here.)
+			name: "trivial records interleaved with a step's DDs keep source order",
+			input: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Pos:  Pos{Line: 4, Column: 1},
+								Name: &Name{Pos: Pos{Line: 4, Column: 3}, Text: "D"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 4, Column: 1},
+										Parameters: []Parameter{
+											&PositionalParameter{
+												Pos:   Pos{Line: 4, Column: 8},
+												Value: &Scalar{Pos: Pos{Line: 4, Column: 8}, Text: "DUMMY"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					&CommentStatement{Pos: Pos{Line: 3, Column: 1}, Text: "//* STEP COMMENT"},
+					&NullStatement{Pos: Pos{Line: 5, Column: 1}},
+					&DelimiterStatement{Pos: Pos{Line: 6, Column: 1}},
+				},
+			},
+			expected: "//J        JOB  \n" +
+				"//S        EXEC PGM=P\n" +
+				"//* STEP COMMENT\n" +
+				"//D        DD   DUMMY\n" +
+				"//\n" +
+				"/*\n",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -203,6 +296,22 @@ func TestPrinterRoundTrip(t *testing.T) {
 				"//         DD   DSN=MY.LIB.B,DISP=SHR\n" +
 				"//SYSPRINT DD   SYSOUT=A",
 		},
+		{
+			name: "comment statement",
+			src:  "//J JOB\n//* THIS STEP COMPILES THE PROGRAM",
+		},
+		{
+			name: "null statement",
+			src:  "//J JOB\n//",
+		},
+		{
+			name: "delimiter statement",
+			src:  "//J JOB\n/*",
+		},
+		{
+			name: "comment statement before the job",
+			src:  "//* HEADER COMMENT\n//J JOB",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -237,6 +346,7 @@ func TestRoundTripFromTestdata(t *testing.T) {
 		fixture string
 	}{
 		{name: "minimal_job_jcl", fixture: "minimal_job.jcl"},
+		{name: "comments_jcl", fixture: "comments.jcl"},
 	}
 
 	for _, tc := range testCases {

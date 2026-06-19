@@ -387,6 +387,147 @@ func TestParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "comment statement in body",
+			src:  "//J JOB\n//* THIS STEP COMPILES THE PROGRAM",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&CommentStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Text: "//* THIS STEP COMPILES THE PROGRAM",
+					},
+				},
+			},
+		},
+		{
+			name: "null statement in body",
+			src:  "//J JOB\n//",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&NullStatement{Pos: Pos{Line: 2, Column: 1}},
+				},
+			},
+		},
+		{
+			name: "delimiter statement in body",
+			src:  "//J JOB\n/*",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&DelimiterStatement{Pos: Pos{Line: 2, Column: 1}},
+				},
+			},
+		},
+		{
+			name: "comment statement before the job (preamble)",
+			src:  "//* HEADER COMMENT\n//J JOB",
+			expected: &Job{
+				Preamble: []Statement{
+					&CommentStatement{
+						Pos:  Pos{Line: 1, Column: 1},
+						Text: "//* HEADER COMMENT",
+					},
+				},
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 2, Column: 1},
+					Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "J"},
+				},
+			},
+		},
+		{
+			// A comment between a step and its DD lands in the body while the DD
+			// attaches to the step it follows; the null and delimiter records
+			// close out the job. The threaded step keeps the DD on STEP S even
+			// though a comment intervenes.
+			name: "trivial statements interleaved through the body",
+			src:  "//J JOB\n//S EXEC PGM=P\n//* STEP COMMENT\n//D DD DUMMY\n//\n/*",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Pos:  Pos{Line: 4, Column: 1},
+								Name: &Name{Pos: Pos{Line: 4, Column: 3}, Text: "D"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 4, Column: 1},
+										Parameters: []Parameter{
+											&PositionalParameter{
+												Pos:   Pos{Line: 4, Column: 8},
+												Value: &Scalar{Pos: Pos{Line: 4, Column: 8}, Text: "DUMMY"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					&CommentStatement{Pos: Pos{Line: 3, Column: 1}, Text: "//* STEP COMMENT"},
+					&NullStatement{Pos: Pos{Line: 5, Column: 1}},
+					&DelimiterStatement{Pos: Pos{Line: 6, Column: 1}},
+				},
+			},
+		},
+		{
+			// A trailing comments field follows the operands within the same
+			// record and is emitted as TokenComment, just as a "//*" comment
+			// statement is — but it is non-semantic and not modeled in the AST. It
+			// must be consumed, not parsed into a standalone CommentStatement: here
+			// both the JOB card and the EXEC carry one, and neither survives into
+			// the parsed Job.
+			name: "trailing comments fields are consumed, not parsed as comment statements",
+			src:  "//J JOB CLASS=A THE JOB CARD\n//S EXEC PGM=P RUN IT",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+					Parameters: []Parameter{
+						&KeywordParameter{
+							Pos:   Pos{Line: 1, Column: 9},
+							Name:  "CLASS",
+							Value: &Scalar{Pos: Pos{Line: 1, Column: 15}, Text: "A"},
+						},
+					},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
