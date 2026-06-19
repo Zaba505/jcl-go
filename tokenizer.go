@@ -269,10 +269,12 @@ func enterGap(cont continuation) tokenizerAction {
 // numeric subparameters), and the ( ) , = . * + - symbols. The . separates the
 // qualifiers of a data set name (A.B.C); the * (back-reference, in-stream star)
 // and the + - signs are single symbols the parser reassembles with their
-// neighbors. A rune that begins no recognized lexeme yields an
-// [UnexpectedCharacterError]. The & symbolic-parameter introducer is deferred to
-// a later story. The cont describes which statement field follows so each emitter
-// can advance it.
+// neighbors. The & introduces a symbolic parameter (&NAME) and && a
+// temporary-data-set / literal-ampersand reference (&&NAME); like the . * + -
+// symbols above, each is emitted as a single [TokenSymbol], leaving the
+// following name run as a separate [TokenIdentifier]. A rune that begins no recognized
+// lexeme yields an [UnexpectedCharacterError]. The cont describes which statement
+// field follows so each emitter can advance it.
 func dispatchToken(cont continuation) tokenizerAction {
 	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
 		pos := t.pos
@@ -293,6 +295,8 @@ func dispatchToken(cont continuation) tokenizerAction {
 			return yieldSymbol(pos, []byte(")"), cont.afterCloseParen())
 		case r == '=' || r == '.' || r == '*' || r == '+' || r == '-':
 			return yieldSymbol(pos, utf8.AppendRune(nil, r), cont.afterOperand())
+		case r == '&':
+			return tokenizeSymbolicParameter(pos, cont)
 		case isDigit(r):
 			return tokenizeNumber(pos, r, cont)
 		case isNameStart(r):
@@ -469,6 +473,32 @@ func tokenizeAfterDoubleSlash(start Pos) tokenizerAction {
 			return tokenizeComment(start)
 		}
 		return yieldSymbol(start, []byte("//"), continuation{phase: phaseExpectNameOrOp})
+	}
+}
+
+// tokenizeSymbolicParameter handles the '&' that introduces a symbolic parameter,
+// the first '&' already consumed at start. A second '&' makes it the '&&'
+// temporary-data-set / literal-ampersand introducer, emitted as a distinct "&&"
+// [TokenSymbol]; otherwise the lone '&' is emitted as "&". Either way the name run
+// that follows is left to [tokenizeName], emitted as a separate [TokenIdentifier];
+// reassembling the symbol and name into a symbolic parameter is a later parser
+// concern. The peeked
+// second '&' is consumed with [tokenizer.next], never put back, per the peekByte
+// contract. A non-EOF read error from the lookahead is propagated; end of input
+// leaves a lone '&'.
+func tokenizeSymbolicParameter(start Pos, cont continuation) tokenizerAction {
+	return func(t *tokenizer, yield func(Token, error) bool) tokenizerAction {
+		b, err := t.peekByte()
+		if err != nil && !errors.Is(err, io.EOF) {
+			return yieldErrorOr(err, nil)
+		}
+		if err == nil && b == '&' {
+			if _, err := t.next(); err != nil { // consume the peeked second '&'
+				return yieldErrorOr(err, nil)
+			}
+			return yieldSymbol(start, []byte("&&"), cont.afterOperand())
+		}
+		return yieldSymbol(start, []byte("&"), cont.afterOperand())
 	}
 }
 
