@@ -337,6 +337,56 @@ func TestParser(t *testing.T) {
 				},
 			},
 		},
+		{
+			// A positional period-qualified name (A.B): parseParameter's
+			// identifier fast-path must delegate to qualified-name parsing the
+			// same way parseValue does, rather than stopping at the first
+			// segment and leaving the "." in the stream.
+			name: "positional qualified name",
+			src:  "//J JOB\n//S EXEC PGM=P\n//D DD A.B",
+			expected: &Job{
+				Statement: &JobStatement{
+					Pos:  Pos{Line: 1, Column: 1},
+					Name: &Name{Pos: Pos{Line: 1, Column: 3}, Text: "J"},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Pos:  Pos{Line: 2, Column: 1},
+						Name: &Name{Pos: Pos{Line: 2, Column: 3}, Text: "S"},
+						Parameters: []Parameter{
+							&KeywordParameter{
+								Pos:   Pos{Line: 2, Column: 10},
+								Name:  "PGM",
+								Value: &Scalar{Pos: Pos{Line: 2, Column: 14}, Text: "P"},
+							},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Pos:  Pos{Line: 3, Column: 1},
+								Name: &Name{Pos: Pos{Line: 3, Column: 3}, Text: "D"},
+								DDs: []*DDStatement{
+									{
+										Pos: Pos{Line: 3, Column: 1},
+										Parameters: []Parameter{
+											&PositionalParameter{
+												Pos: Pos{Line: 3, Column: 8},
+												Value: &QualifiedName{
+													Pos: Pos{Line: 3, Column: 8},
+													Segments: []Scalar{
+														{Pos: Pos{Line: 3, Column: 8}, Text: "A"},
+														{Pos: Pos{Line: 3, Column: 10}, Text: "B"},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {

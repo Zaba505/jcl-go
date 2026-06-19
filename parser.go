@@ -494,6 +494,14 @@ func parseParameter(p *parser) (Parameter, error) {
 				return nil, err
 			}
 			return &KeywordParameter{Pos: keyword.Pos, Name: string(keyword.Value), Value: value}, nil
+		} else if ok && isSymbol(next, ".") {
+			// A "." after the identifier makes this a positional period-qualified
+			// name (A.B.C), the same Scalar { "." Scalar } value parseValue reads.
+			qn, err := parseQualifiedName(p, Scalar{Pos: keyword.Pos, Text: string(keyword.Value)})
+			if err != nil {
+				return nil, err
+			}
+			return &PositionalParameter{Pos: qn.Pos, Value: qn}, nil
 		}
 		return &PositionalParameter{Pos: keyword.Pos, Value: &Scalar{Pos: keyword.Pos, Text: string(keyword.Value)}}, nil
 	}
