@@ -520,6 +520,45 @@ func TestTokenizer(t *testing.T) {
 				{Pos: Pos{Line: 2, Column: 14}, Type: TokenIdentifier, Value: []byte("D")},
 			},
 		},
+		{
+			// A blank after an operand starts the comments field even when the
+			// last operand ended with a trailing comma: the comma signals operand
+			// continuation only at a record boundary, not when a blank and free
+			// text follow on the same record. "THE COMMENT" is the comments field.
+			name: "trailing comma followed by a blank and text starts the comments field",
+			src:  "//A JOB B, THE COMMENT",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("JOB")},
+				{Pos: Pos{Line: 1, Column: 9}, Type: TokenIdentifier, Value: []byte("B")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenSymbol, Value: []byte(",")},
+				{Pos: Pos{Line: 1, Column: 12}, Type: TokenComment, Value: []byte("THE COMMENT")},
+			},
+		},
+		{
+			// A column-72 comment-continuation indicator only continues onto a
+			// record with a blank in column 3. Record 2 here is "//C EXEC ...",
+			// whose column 3 is non-blank, so it is a new statement: the comment
+			// ends at record 1 and record 2 tokenizes fresh, not swallowed.
+			name: "comment continuation does not swallow a record with a non-blank column 3",
+			src:  "//A EXEC PGM=B  COMMENT" + strings.Repeat(" ", 48) + "X" + "\n//C EXEC PGM=D",
+			expected: []Token{
+				{Pos: Pos{Line: 1, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 1, Column: 3}, Type: TokenIdentifier, Value: []byte("A")},
+				{Pos: Pos{Line: 1, Column: 5}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 1, Column: 10}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 1, Column: 13}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 1, Column: 14}, Type: TokenIdentifier, Value: []byte("B")},
+				{Pos: Pos{Line: 1, Column: 17}, Type: TokenComment, Value: []byte("COMMENT" + strings.Repeat(" ", 48))},
+				{Pos: Pos{Line: 2, Column: 1}, Type: TokenSymbol, Value: []byte("//")},
+				{Pos: Pos{Line: 2, Column: 3}, Type: TokenIdentifier, Value: []byte("C")},
+				{Pos: Pos{Line: 2, Column: 5}, Type: TokenIdentifier, Value: []byte("EXEC")},
+				{Pos: Pos{Line: 2, Column: 10}, Type: TokenIdentifier, Value: []byte("PGM")},
+				{Pos: Pos{Line: 2, Column: 13}, Type: TokenSymbol, Value: []byte("=")},
+				{Pos: Pos{Line: 2, Column: 14}, Type: TokenIdentifier, Value: []byte("D")},
+			},
+		},
 	}
 
 	for _, tc := range testCases {

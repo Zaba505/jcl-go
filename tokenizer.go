@@ -340,8 +340,13 @@ func skipFieldGap(cont continuation, next func(continuation) tokenizerAction) to
 				// SPEC.md), so it is ignored here. Comment continuation, where the
 				// column-72 indicator is required, is handled in tokenizeCommentsField.
 			default:
+				// A blank outside apostrophes/parentheses, after at least one
+				// operand, is the comments-field boundary (SPEC.md). A trailing
+				// comma does not suppress it: the comma only signals operand
+				// continuation at a record boundary, not when a blank and free
+				// text follow it on the same record.
 				if skippedBlank && cont.phase == phaseParamsOperand &&
-					cont.parenDepth == 0 && !cont.pendingComma {
+					cont.parenDepth == 0 {
 					return yieldErrorOr(t.backup(pos), tokenizeCommentsField(pos, nil))
 				}
 				return yieldErrorOr(t.backup(pos), next(cont.withoutSignals()))
@@ -634,11 +639,16 @@ func continueComment(start Pos, value []byte) tokenizerAction {
 			tok := Token{Pos: start, Type: TokenComment, Value: value}
 			return yieldTokenThen(tok, next)
 		}
-		bs, err := t.buf.Peek(2)
+		bs, err := t.buf.Peek(3)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return yieldErrorOr(err, nil)
 		}
-		if len(bs) < 2 || bs[0] != '/' || bs[1] != '/' {
+		// Comment continuation requires "//" in columns 1-2 and a blank in
+		// column 3 (SPEC.md, "Continuing the comments field"). Any other record
+		// — including one whose column 3 is non-blank, e.g. "//C EXEC ..." — is a
+		// new statement, not a continuation: emit the accumulated comment and
+		// dispatch the record fresh rather than swallowing it into the comment.
+		if len(bs) < 3 || bs[0] != '/' || bs[1] != '/' || (bs[2] != ' ' && bs[2] != '\t') {
 			return emit(tokenizeJCL)
 		}
 		if _, err := t.next(); err != nil { // consume first '/'
