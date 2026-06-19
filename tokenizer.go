@@ -271,8 +271,8 @@ func enterGap(cont continuation) tokenizerAction {
 // and the + - signs are single symbols the parser reassembles with their
 // neighbors. The & introduces a symbolic parameter (&NAME) and && a
 // temporary-data-set / literal-ampersand reference (&&NAME); like the . * + -
-// symbols above, each is emitted as a single [TokenSymbol] that the parser
-// reassembles with the following name run. A rune that begins no recognized
+// symbols above, each is emitted as a single [TokenSymbol], leaving the
+// following name run as a separate [TokenIdentifier]. A rune that begins no recognized
 // lexeme yields an [UnexpectedCharacterError]. The cont describes which statement
 // field follows so each emitter can advance it.
 func dispatchToken(cont continuation) tokenizerAction {
@@ -480,8 +480,9 @@ func tokenizeAfterDoubleSlash(start Pos) tokenizerAction {
 // the first '&' already consumed at start. A second '&' makes it the '&&'
 // temporary-data-set / literal-ampersand introducer, emitted as a distinct "&&"
 // [TokenSymbol]; otherwise the lone '&' is emitted as "&". Either way the name run
-// that follows is left to [tokenizeName] (a [TokenIdentifier]); the parser
-// reassembles the symbolic parameter from the symbol and the name. The peeked
+// that follows is left to [tokenizeName], emitted as a separate [TokenIdentifier];
+// reassembling the symbol and name into a symbolic parameter is a later parser
+// concern. The peeked
 // second '&' is consumed with [tokenizer.next], never put back, per the peekByte
 // contract. A non-EOF read error from the lookahead is propagated; end of input
 // leaves a lone '&'.
