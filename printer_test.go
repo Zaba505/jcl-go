@@ -95,6 +95,63 @@ func TestPrinter(t *testing.T) {
 			},
 			expected: "//MYJOB    JOB  'O''NEIL'\n",
 		},
+		{
+			// Pins DD formatting: the ddname aligns the operation/operand fields,
+			// an unnamed concatenation continuation is written with a blank name
+			// field, and a QualifiedName value is dot-joined. Positions are
+			// irrelevant to the printer, so they are left zero.
+			name: "step with a dd concatenation",
+			input: &Job{
+				Statement: &JobStatement{
+					Name: &Name{Text: "MYJOB"},
+					Parameters: []Parameter{
+						&PositionalParameter{
+							Value: &SubparameterList{
+								Items: []Parameter{
+									&PositionalParameter{Value: &Scalar{Text: "ACCT"}},
+								},
+							},
+						},
+					},
+				},
+				Body: []Statement{
+					&ExecStatement{
+						Name: &Name{Text: "STEP1"},
+						Parameters: []Parameter{
+							&KeywordParameter{Name: "PGM", Value: &Scalar{Text: "IEBGENER"}},
+						},
+						DDs: []*DDConcatenation{
+							{
+								Name: &Name{Text: "SYSLIB"},
+								DDs: []*DDStatement{
+									{Parameters: []Parameter{
+										&KeywordParameter{Name: "DSN", Value: &QualifiedName{Segments: []Scalar{{Text: "MY"}, {Text: "LIB"}, {Text: "A"}}}},
+										&KeywordParameter{Name: "DISP", Value: &Scalar{Text: "SHR"}},
+									}},
+									{Parameters: []Parameter{
+										&KeywordParameter{Name: "DSN", Value: &QualifiedName{Segments: []Scalar{{Text: "MY"}, {Text: "LIB"}, {Text: "B"}}}},
+										&KeywordParameter{Name: "DISP", Value: &Scalar{Text: "SHR"}},
+									}},
+								},
+							},
+							{
+								Name: &Name{Text: "SYSPRINT"},
+								DDs: []*DDStatement{
+									{Parameters: []Parameter{
+										&KeywordParameter{Name: "SYSOUT", Value: &Scalar{Text: "A"}},
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: "//MYJOB    JOB  (ACCT)\n" +
+				"//STEP1    EXEC PGM=IEBGENER\n" +
+				"//SYSLIB   DD   DSN=MY.LIB.A,DISP=SHR\n" +
+				"//         DD   DSN=MY.LIB.B,DISP=SHR\n" +
+				"//SYSPRINT DD   SYSOUT=A\n",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -131,6 +188,16 @@ func TestPrinterRoundTrip(t *testing.T) {
 		{
 			name: "quoted string with embedded apostrophe",
 			src:  "//MYJOB    JOB  'O''NEIL'",
+		},
+		{
+			// Canonical columns so Parse -> Print reproduces the source exactly
+			// and the reparsed AST (positions included) equals the first.
+			name: "step with a dd concatenation",
+			src: "//RT       JOB  (X)\n" +
+				"//STEP1    EXEC PGM=IEBGENER\n" +
+				"//SYSLIB   DD   DSN=MY.LIB.A,DISP=SHR\n" +
+				"//         DD   DSN=MY.LIB.B,DISP=SHR\n" +
+				"//SYSPRINT DD   SYSOUT=A",
 		},
 	}
 

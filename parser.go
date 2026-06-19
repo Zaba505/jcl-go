@@ -36,8 +36,9 @@ type Statement interface {
 	isStatement()
 }
 
-func (*JobStatement) isStatement()  {}
-func (*ExecStatement) isStatement() {}
+func (*JobStatement) isStatement()    {}
+func (*ExecStatement) isStatement()   {}
+func (*DDConcatenation) isStatement() {}
 
 // Name is a name-field label (a jobname or stepname). A keyword or subparameter
 // list uses its own representation; only the statement name field is a Name.
@@ -72,6 +73,45 @@ type ExecStatement struct {
 
 	// Parameters holds the EXEC operands in source order. The program to run is
 	// carried here as a KeywordParameter (PGM=…), not a dedicated field.
+	Parameters []Parameter
+
+	// DDs holds the data definitions of this step, in source order, one entry
+	// per ddname. Concatenated DDs (a named DD followed by unnamed DDs) are
+	// grouped into a single DDConcatenation.
+	DDs []*DDConcatenation
+}
+
+// DDConcatenation is a step's data definition: a ddname and the one or more
+// concatenated DD statements coded under it. The ddname identifies the whole
+// concatenation; the second and later members are coded with a blank name field
+// in source. A non-concatenated DD is a group of one.
+//
+// A DDConcatenation is currently produced only as an entry of
+// [ExecStatement.DDs] — it is never placed in [Job.Body] — but it implements
+// [Statement] so DD can be treated as a body statement by later stories.
+type DDConcatenation struct {
+	// Pos is the position of the head member's leading "//".
+	Pos Pos
+
+	// Name is the ddname, shared by the whole concatenation. It is nil only for
+	// an unnamed DD coded with no preceding named DD (invalid JCL the parser
+	// tolerates).
+	Name *Name
+
+	// DDs holds the member statements in source order; it always has at least
+	// one element.
+	DDs []*DDStatement
+}
+
+// DDStatement is one physical DD record's operands: "//" [name] "DD" parameters.
+// The ddname lives on the owning [DDConcatenation], not here, so a member carries
+// only its position and parameter field.
+type DDStatement struct {
+	// Pos is the position of the leading "//".
+	Pos Pos
+
+	// Parameters holds the DD operands in source order (DSN, DISP, SPACE, UNIT,
+	// VOL, DCB, SYSOUT, DUMMY, …).
 	Parameters []Parameter
 }
 
@@ -108,16 +148,27 @@ type Value interface {
 }
 
 func (*Scalar) isValue()           {}
+func (*QualifiedName) isValue()    {}
 func (*QuotedString) isValue()     {}
 func (*SubparameterList) isValue() {}
 func (*OmittedValue) isValue()     {}
 
 // Scalar is an unquoted value: a single alphanumeric/national run (a
-// [TokenIdentifier]) or a number (a [TokenNumber]). Qualified names (A.B.C) are
-// a later story.
+// [TokenIdentifier]) or a number (a [TokenNumber]). A period-qualified name
+// (A.B.C) is a [QualifiedName] whose segments are each a Scalar.
 type Scalar struct {
 	Pos  Pos
 	Text string
+}
+
+// QualifiedName is a period-qualified value such as a data set name (A.B.C): the
+// assembled form of the grammar's Scalar { "." Scalar }. Segments holds the
+// dot-separated parts in order and always has at least two elements — a
+// single-segment value is a [Scalar], not a QualifiedName.
+type QualifiedName struct {
+	// Pos is the position of the first segment.
+	Pos      Pos
+	Segments []Scalar
 }
 
 // QuotedString is an apostrophe-delimited value. Value is the decoded text: the
@@ -154,6 +205,7 @@ type parameterSink interface {
 
 func (s *JobStatement) appendParameter(p Parameter)     { s.Parameters = append(s.Parameters, p) }
 func (s *ExecStatement) appendParameter(p Parameter)    { s.Parameters = append(s.Parameters, p) }
+func (s *DDStatement) appendParameter(p Parameter)      { s.Parameters = append(s.Parameters, p) }
 func (s *SubparameterList) appendParameter(p Parameter) { s.Items = append(s.Items, p) }
 
 // Parse the JCL source from the given reader into a [Job].
@@ -301,32 +353,66 @@ func parseJob(p *parser, job *Job) (parserAction[*Job], error) {
 	return parseBody, nil
 }
 
-// parseBody parses the statements that make up the job's steps, one per call,
-// looping until the token stream is exhausted. Each statement is dispatched on
-// its operation field.
+// parseBody parses the statements that make up the job's steps. It threads the
+// current step (the most recent EXEC) through the loop so a DD statement attaches
+// to the step it follows; the initial step is nil.
 func parseBody(p *parser, job *Job) (parserAction[*Job], error) {
-	if _, ok, err := p.peek(); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, nil
-	}
+	return parseBodyStatement(nil)(p, job)
+}
 
-	startPos := mustPeekPos(p)
-	name, op, err := p.statementHeader()
-	if err != nil {
-		return nil, err
-	}
-	switch string(op.Value) {
-	case "EXEC":
-		stmt := &ExecStatement{Pos: startPos, Name: name}
-		if err := parseParameters(p, stmt); err != nil {
+// parseBodyStatement parses one body statement, dispatched on its operation
+// field, then continues with the next. An EXEC starts a new step and becomes the
+// current step for the DDs that follow it; a DD attaches to step, which the
+// returned action keeps current. The loop ends when the token stream is
+// exhausted.
+func parseBodyStatement(step *ExecStatement) parserAction[*Job] {
+	return func(p *parser, job *Job) (parserAction[*Job], error) {
+		if _, ok, err := p.peek(); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, nil
+		}
+
+		startPos := mustPeekPos(p)
+		name, op, err := p.statementHeader()
+		if err != nil {
 			return nil, err
 		}
-		job.Body = append(job.Body, stmt)
-		return parseBody, nil
-	default:
-		return nil, UnexpectedOperationError{Pos: op.Pos, Operation: string(op.Value)}
+		switch string(op.Value) {
+		case "EXEC":
+			stmt := &ExecStatement{Pos: startPos, Name: name}
+			if err := parseParameters(p, stmt); err != nil {
+				return nil, err
+			}
+			job.Body = append(job.Body, stmt)
+			return parseBodyStatement(stmt), nil
+		case "DD":
+			if step == nil {
+				return nil, MisplacedDDError{Pos: op.Pos}
+			}
+			dd := &DDStatement{Pos: startPos}
+			if err := parseParameters(p, dd); err != nil {
+				return nil, err
+			}
+			attachDD(step, name, startPos, dd)
+			return parseBodyStatement(step), nil
+		default:
+			return nil, UnexpectedOperationError{Pos: op.Pos, Operation: string(op.Value)}
+		}
 	}
+}
+
+// attachDD groups a parsed DD member into its step's concatenation list. A named
+// DD opens a new concatenation; an unnamed DD continues the step's most recent
+// concatenation. An unnamed DD coded with no open concatenation opens its own
+// nameless group — invalid JCL the parser tolerates rather than rejects.
+func attachDD(step *ExecStatement, name *Name, pos Pos, dd *DDStatement) {
+	if name == nil && len(step.DDs) > 0 {
+		last := step.DDs[len(step.DDs)-1]
+		last.DDs = append(last.DDs, dd)
+		return
+	}
+	step.DDs = append(step.DDs, &DDConcatenation{Pos: pos, Name: name, DDs: []*DDStatement{dd}})
 }
 
 // mustPeekPos returns the position of the next (already-peeked, available) token.
@@ -444,8 +530,53 @@ func parseValue(p *parser) (Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Scalar{Pos: scalar.Pos, Text: string(scalar.Value)}, nil
+		first := Scalar{Pos: scalar.Pos, Text: string(scalar.Value)}
+		// A "." immediately after the scalar makes this a period-qualified name
+		// (A.B.C); otherwise it is a plain single-segment scalar.
+		if tok, ok, err := p.peek(); err != nil {
+			return nil, err
+		} else if ok && isSymbol(tok, ".") {
+			return parseQualifiedName(p, first)
+		}
+		return &first, nil
 	}
+}
+
+// parseQualifiedName reads the remaining "." Scalar segments of a period-qualified
+// name whose first segment is already read, running the segment action loop. The
+// "." separating the first two segments is the next token.
+func parseQualifiedName(p *parser, first Scalar) (*QualifiedName, error) {
+	qn := &QualifiedName{Pos: first.Pos, Segments: []Scalar{first}}
+	var err error
+	for action := parseQualifierSegment; action != nil && err == nil; {
+		action, err = action(p, qn)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return qn, nil
+}
+
+// parseQualifierSegment consumes one "." plus the scalar that follows it, appends
+// the scalar to qn, and continues while another "." follows; it stops when the
+// next token is not ".".
+func parseQualifierSegment(p *parser, qn *QualifiedName) (parserAction[*QualifiedName], error) {
+	tok, ok, err := p.peek()
+	if err != nil {
+		return nil, err
+	}
+	if !ok || !isSymbol(tok, ".") {
+		return nil, nil
+	}
+	if _, _, err := p.advance(); err != nil { // consume the "."
+		return nil, err
+	}
+	scalar, err := p.expect(TokenIdentifier, TokenNumber)
+	if err != nil {
+		return nil, err
+	}
+	qn.Segments = append(qn.Segments, Scalar{Pos: scalar.Pos, Text: string(scalar.Value)})
+	return parseQualifierSegment, nil
 }
 
 // parseSubparameterList reads a parenthesized subparameter list:
@@ -525,6 +656,8 @@ func parseSubparameterElement(p *parser, list *SubparameterList) (parserAction[*
 func valuePos(v Value) Pos {
 	switch v := v.(type) {
 	case *Scalar:
+		return v.Pos
+	case *QualifiedName:
 		return v.Pos
 	case *QuotedString:
 		return v.Pos
@@ -606,6 +739,18 @@ type UnexpectedOperationError struct {
 // Error implements the [error] interface.
 func (e UnexpectedOperationError) Error() string {
 	return fmt.Sprintf("unexpected operation %q at line %d, column %d", e.Operation, e.Pos.Line, e.Pos.Column)
+}
+
+// MisplacedDDError is returned when a DD statement appears with no preceding EXEC
+// step to own it (a DD before the job's first step). A DD's data definitions
+// belong to a step, so such a DD has no owner.
+type MisplacedDDError struct {
+	Pos Pos
+}
+
+// Error implements the [error] interface.
+func (e MisplacedDDError) Error() string {
+	return fmt.Sprintf("DD statement at line %d, column %d has no preceding step", e.Pos.Line, e.Pos.Column)
 }
 
 // MissingNameError is returned when a statement that requires a name field (such

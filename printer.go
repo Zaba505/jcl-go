@@ -88,8 +88,25 @@ func printBodyAt(i int) printerAction {
 		}
 		if s, ok := j.Body[i].(*ExecStatement); ok {
 			writeStatement(pr, s.Name, "EXEC", s.Parameters)
+			writeStepDDs(pr, s)
 		}
 		return printBodyAt(i + 1)
+	}
+}
+
+// writeStepDDs writes the DD statements of a step: each concatenation's named
+// head followed by its unnamed continuations. The ddname lives on the
+// concatenation, so only the first member of each group carries a name; the rest
+// are written with a blank name field.
+func writeStepDDs(pr *printer, s *ExecStatement) {
+	for _, c := range s.DDs {
+		for i, dd := range c.DDs {
+			var name *Name
+			if i == 0 {
+				name = c.Name
+			}
+			writeStatement(pr, name, "DD", dd.Parameters)
+		}
 	}
 }
 
@@ -142,6 +159,13 @@ func writeValue(pr *printer, v Value) {
 	switch v := v.(type) {
 	case *Scalar:
 		pr.write(v.Text)
+	case *QualifiedName:
+		for i, seg := range v.Segments {
+			if i > 0 {
+				pr.write(".")
+			}
+			pr.write(seg.Text)
+		}
 	case *QuotedString:
 		pr.write(encodeQuotedString(v.Value))
 	case *SubparameterList:
